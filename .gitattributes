@@ -1,0 +1,12 @@
+*          text=auto
+
+.editorconfig text
+.gitattributes text export-ignore
+.gitignore text export-ignore
+Dockerfile text
+
+*.go       text diff=golang
+*.json     text
+*.md       text diff=markdown
+*.mod      text eol=lf
+*.sum      text eol=lf
