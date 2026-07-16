@@ -17,6 +17,13 @@ func TestMigrationsAndLinkedUserPersist(t *testing.T) {
 	if err := s.SaveLinkedUser(ctx, LinkedUser{WithingsUserID: "42", AccessToken: []byte("encrypted-access"), RefreshToken: []byte("encrypted-refresh"), TokenExpiry: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	var createdAt, updatedAt string
+	if err := s.db.QueryRowContext(ctx, "SELECT created_at, updated_at FROM linked_users WHERE withings_user_id = ?", "42").Scan(&createdAt, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if createdAt != updatedAt {
+		t.Fatalf("created_at = %s, updated_at = %s; expected identical timestamps", createdAt, updatedAt)
+	}
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("migrations must be idempotent: %v", err)
 	}

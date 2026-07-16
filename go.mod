@@ -1,6 +1,6 @@
 module github.com/Drakmyth/withings2mqtt
 
-go 1.23.0
+go 1.26.5
 
 require modernc.org/sqlite v1.36.3
 
