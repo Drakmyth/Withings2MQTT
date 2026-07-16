@@ -188,3 +188,27 @@ func TestHTMXIsServedLocally(t *testing.T) {
 		t.Fatalf("unexpected htmx response: %d", w.Code)
 	}
 }
+
+func TestLinkedAccountsPersistAndCanBeUnlinked(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access", "refresh", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/admin/status", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), "Withings user: user-1") || !strings.Contains(w.Body.String(), `hx-trigger="every 30s"`) {
+		t.Fatalf("unexpected status: %s", w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/unlink", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("unlink status = %d", w.Code)
+	}
+	if _, err := a.store.LinkedUser(context.Background(), "user-1"); err == nil {
+		t.Fatal("unlinked account remains available for synchronization")
+	}
+}

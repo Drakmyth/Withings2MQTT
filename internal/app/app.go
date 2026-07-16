@@ -37,7 +37,7 @@ type App struct {
 	statesMu   sync.Mutex
 	states     map[string]oauthState
 }
-type adminData struct{ LinkedUserCount int }
+type adminData struct{ LinkedUsers []store.LinkedUser }
 
 func New(cfg config.Config) (*App, error) {
 	s, err := store.Open(cfg.DBPath)
@@ -80,6 +80,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/status", a.adminStatus)
 	mux.HandleFunc("GET /admin/withings/link", a.startWithingsLink)
 	mux.HandleFunc("GET /oauth/withings/callback", a.withingsCallback)
+	mux.HandleFunc("POST /admin/withings/{id}/unlink", a.unlinkWithings)
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
 }
@@ -184,8 +185,18 @@ func (a *App) localAdmin(next http.HandlerFunc) http.HandlerFunc {
 func (a *App) admin(w http.ResponseWriter, r *http.Request)       { a.localAdmin(a.renderAdmin)(w, r) }
 func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) { a.localAdmin(a.renderStatus)(w, r) }
 func (a *App) data(ctx context.Context) (adminData, error) {
-	count, err := a.store.LinkedUserCount(ctx)
-	return adminData{LinkedUserCount: count}, err
+	users, err := a.store.LinkedUsers(ctx)
+	return adminData{LinkedUsers: users}, err
+}
+
+func (a *App) unlinkWithings(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if err := a.store.DeleteLinkedUser(r.Context(), r.PathValue("id")); err != nil {
+			http.Error(w, "could not unlink account", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	})(w, r)
 }
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request) {
 	data, err := a.data(r.Context())

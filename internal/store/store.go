@@ -108,6 +108,44 @@ func (s *Store) LinkedUserCount(ctx context.Context) (int, error) {
 	return count, err
 }
 
+func (s *Store) LinkedUsers(ctx context.Context) ([]LinkedUser, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT withings_user_id, access_token, refresh_token, token_expiry FROM linked_users ORDER BY withings_user_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []LinkedUser
+	for rows.Next() {
+		var user LinkedUser
+		var expiry string
+		if err := rows.Scan(&user.WithingsUserID, &user.AccessToken, &user.RefreshToken, &expiry); err != nil {
+			return nil, err
+		}
+		user.TokenExpiry, err = time.Parse(time.RFC3339Nano, expiry)
+		if err != nil {
+			return nil, fmt.Errorf("parse token expiry: %w", err)
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *Store) LinkedUser(ctx context.Context, id string) (LinkedUser, error) {
+	var user LinkedUser
+	var expiry string
+	err := s.db.QueryRowContext(ctx, "SELECT withings_user_id, access_token, refresh_token, token_expiry FROM linked_users WHERE withings_user_id = ?", id).Scan(&user.WithingsUserID, &user.AccessToken, &user.RefreshToken, &expiry)
+	if err != nil {
+		return LinkedUser{}, err
+	}
+	user.TokenExpiry, err = time.Parse(time.RFC3339Nano, expiry)
+	return user, err
+}
+
+func (s *Store) DeleteLinkedUser(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM linked_users WHERE withings_user_id = ?", id)
+	return err
+}
+
 func (s *Store) RawAccessToken(ctx context.Context, id string) ([]byte, error) {
 	var value []byte
 	err := s.db.QueryRowContext(ctx, "SELECT access_token FROM linked_users WHERE withings_user_id = ?", id).Scan(&value)
