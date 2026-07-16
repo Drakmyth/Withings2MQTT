@@ -50,6 +50,9 @@ func TestAdminRejectsRemoteAndRendersLocal(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `href="/admin/withings/link"`) {
 		t.Fatal("admin page omitted the Withings account link")
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 }
 func TestAdminStatusHasFullPageFallback(t *testing.T) {
 	a := newTestApp(t)
@@ -59,6 +62,9 @@ func TestAdminStatusHasFullPageFallback(t *testing.T) {
 	a.Handler().ServeHTTP(w, r)
 	if !strings.Contains(w.Body.String(), "<!doctype html>") {
 		t.Fatal("status fallback was not a full page")
+	}
+	if got := w.Header().Get("Vary"); got != "HX-Request" {
+		t.Fatalf("Vary = %q, want HX-Request", got)
 	}
 }
 

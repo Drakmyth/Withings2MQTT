@@ -118,13 +118,22 @@ func (a *App) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	mux.HandleFunc("GET /admin", a.admin)
-	mux.HandleFunc("GET /admin/status", a.adminStatus)
-	mux.HandleFunc("GET /admin/withings/link", a.startWithingsLink)
-	mux.HandleFunc("GET /oauth/withings/callback", a.withingsCallback)
-	mux.HandleFunc("POST /admin/withings/{id}/unlink", a.unlinkWithings)
+	mux.HandleFunc("GET /admin", noStore(a.admin))
+	mux.HandleFunc("GET /admin/status", noStore(a.adminStatus))
+	mux.HandleFunc("GET /admin/withings/link", noStore(a.startWithingsLink))
+	mux.HandleFunc("GET /oauth/withings/callback", noStore(a.withingsCallback))
+	mux.HandleFunc("POST /admin/withings/{id}/unlink", noStore(a.unlinkWithings))
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
+}
+
+func noStore(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next(w, r)
+	}
 }
 func (a *App) startWithingsLink(w http.ResponseWriter, r *http.Request) {
 	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +285,7 @@ func (a *App) renderStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Add("Vary", "HX-Request")
 	if strings.EqualFold(r.Header.Get("HX-Request"), "true") {
 		_ = a.templates.ExecuteTemplate(w, "status", data)
 		return
