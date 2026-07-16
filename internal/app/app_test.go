@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +56,51 @@ func TestAdminStatusHasFullPageFallback(t *testing.T) {
 	a.Handler().ServeHTTP(w, r)
 	if !strings.Contains(w.Body.String(), "<!doctype html>") {
 		t.Fatal("status fallback was not a full page")
+	}
+}
+
+func TestStartWithingsLinkRequiresCompleteConfiguration(t *testing.T) {
+	a := newTestApp(t)
+	r := httptest.NewRequest(http.MethodGet, "/admin/withings/link", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "WITHINGS2MQTT_WITHINGS_CLIENT_ID") {
+		t.Fatalf("unexpected response: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestStartWithingsLinkRedirectsWithRequiredParameters(t *testing.T) {
+	a := newTestApp(t)
+	a.cfg.WithingsOAuth = config.WithingsOAuthConfig{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "http://127.0.0.1:8080/oauth/withings/callback",
+	}
+	r := httptest.NewRequest(http.MethodGet, "/admin/withings/link", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	location, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location.Scheme+"://"+location.Host+location.Path != withingsAuthorizeURL {
+		t.Fatalf("redirect URL = %q", location.String())
+	}
+	want := map[string]string{
+		"response_type": "code",
+		"client_id":     "client-id",
+		"redirect_uri":  a.cfg.WithingsOAuth.RedirectURL,
+		"scope":         "user.metrics,user.activity",
+	}
+	for name, value := range want {
+		if got := location.Query().Get(name); got != value {
+			t.Errorf("%s = %q, want %q", name, got, value)
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 
 //go:embed templates/admin.html static/htmx-2.0.4.min.js
 var assets embed.FS
+
+const withingsAuthorizeURL = "https://account.withings.com/oauth2_user/authorize2"
 
 type App struct {
 	cfg       config.Config
@@ -64,8 +67,24 @@ func (a *App) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /admin", a.admin)
 	mux.HandleFunc("GET /admin/status", a.adminStatus)
+	mux.HandleFunc("GET /admin/withings/link", a.startWithingsLink)
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
+}
+func (a *App) startWithingsLink(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if err := a.cfg.WithingsOAuth.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		params := url.Values{
+			"response_type": {"code"},
+			"client_id":     {a.cfg.WithingsOAuth.ClientID},
+			"redirect_uri":  {a.cfg.WithingsOAuth.RedirectURL},
+			"scope":         {"user.metrics,user.activity"},
+		}
+		http.Redirect(w, r, withingsAuthorizeURL+"?"+params.Encode(), http.StatusFound)
+	})(w, r)
 }
 func (a *App) localAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
