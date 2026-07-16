@@ -47,6 +47,9 @@ func TestAdminRejectsRemoteAndRendersLocal(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Linked accounts: 0") {
 		t.Fatalf("unexpected admin response: %d %s", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), `href="/admin/withings/link"`) {
+		t.Fatal("admin page omitted the Withings account link")
+	}
 }
 func TestAdminStatusHasFullPageFallback(t *testing.T) {
 	a := newTestApp(t)
