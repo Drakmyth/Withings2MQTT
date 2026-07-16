@@ -1,49 +1,45 @@
-# go-template-cli
+# Withings2MQTT
 
-This is a quick and simple example of a Go CLI application. The [Cobra](https://github.com/spf13/cobra) library is used to handle argument and flag parsing.
+Withings2MQTT is a local service that will link Withings accounts, persist their health data, and publish it to MQTT. This first release establishes its secure local server and storage foundation.
 
-### Built With
+## Run locally
 
-* [![Golang][golang-shield]][golang-url]
+Generate an encryption key once and keep it secret; it encrypts OAuth tokens before they reach SQLite.
 
-## Usage
+```sh
+export WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+go run .
+```
 
-Execute `go-template-cli help` for more detailed information.
+The service listens on `127.0.0.1:8080` by default. Visit `http://127.0.0.1:8080/healthz` for a health check and `http://127.0.0.1:8080/admin` for the local administration page. Data is stored at `data/withings2mqtt.db` by default.
 
-Command    | Arguments              | Description
----------- | ---------------------- | -----------
-subcommand | `[flags] <input-text>` | Example argument handling
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY` | required | Base64-encoded, 32-byte AES-GCM key. |
+| `WITHINGS2MQTT_LISTEN_ADDR` | `127.0.0.1:8080` | HTTP listener address. |
+| `WITHINGS2MQTT_DB_PATH` | `data/withings2mqtt.db` | SQLite database path. |
+| `WITHINGS2MQTT_ADMIN_ALLOW_REMOTE` | `false` | Allow `/admin` from non-loopback clients. |
+
+The admin handler additionally rejects non-loopback requests unless `WITHINGS2MQTT_ADMIN_ALLOW_REMOTE=true`. Do not expose it publicly without appropriate network controls.
+
+## Docker
+
+```sh
+docker build -t withings2mqtt .
+docker run --rm -p 8080:8080 -v withings2mqtt-data:/data \
+  -e WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  withings2mqtt
+```
+
+The image includes a Docker health check. It listens on all interfaces inside the container, but its admin UI remains localhost-only unless explicitly enabled.
 
 ## Development
 
-### Build
-
-```go
-> go build
-```
-
-### Debugging
-
-Using the [Delve][delve-url] debugger with CLI applications is a little tricky. See the [Delve documentation][delve-debug-url] for recommended procedures on how to do this.
-
-### Release
-
-While the produced binary is a CLI application and is intended to be executed by directly, a containerized installation is also provided. This container utilizes a dedicated build stage along with the [scratch][scratch-url] Docker image to ensure the final image contains only the necessary resources and nothing else.
-
-#### Build
 ```sh
-> docker build . -t go-template-cli
-> docker run go-template-cli subcommand "Hello, World!"
+go test ./...
+go build ./...
 ```
 
-## License
-
-This example code is provided to the public domain via the CC0 1.0 Universal License. See [LICENSE.md](./LICENSE.md) for more information.
-
-
-<!-- Reference Links -->
-[golang-url]: https://go.dev
-[golang-shield]: https://img.shields.io/badge/golang-09657c?style=for-the-badge&logo=go&logoColor=79d2fa
-[delve-url]: https://github.com/go-delve/delve
-[delve-debug-url]: https://github.com/go-delve/delve/blob/master/Documentation/faq.md#-how-can-i-use-delve-to-debug-a-cli-application
-[scratch-url]: https://hub.docker.com/_/scratch/
+HTMX 2.0.4 is vendored at `internal/app/static/htmx-2.0.4.min.js`; the admin UI makes no external browser asset request.
