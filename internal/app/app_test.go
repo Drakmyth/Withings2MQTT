@@ -102,6 +102,67 @@ func TestStartWithingsLinkRedirectsWithRequiredParameters(t *testing.T) {
 			t.Errorf("%s = %q, want %q", name, got, value)
 		}
 	}
+	if state := location.Query().Get("state"); state == "" {
+		t.Fatal("redirect omitted OAuth state")
+	}
+}
+
+func TestOAuthStateIsOneTimeAndExpires(t *testing.T) {
+	a := newTestApp(t)
+	state, err := a.newOAuthState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.consumeOAuthState(state) {
+		t.Fatal("fresh state was rejected")
+	}
+	if a.consumeOAuthState(state) {
+		t.Fatal("reused state was accepted")
+	}
+	expired, err := a.newOAuthState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.statesMu.Lock()
+	a.states[expired] = oauthState{expiresAt: time.Now().Add(-time.Second)}
+	a.statesMu.Unlock()
+	if a.consumeOAuthState(expired) {
+		t.Fatal("expired state was accepted")
+	}
+	if a.consumeOAuthState("unknown") {
+		t.Fatal("unknown state was accepted")
+	}
+}
+
+func TestWithingsCallbackCreatesLinkedAccount(t *testing.T) {
+	a := newTestApp(t)
+	a.cfg.WithingsOAuth = config.WithingsOAuthConfig{ClientID: "client-id", ClientSecret: "secret", RedirectURL: "http://localhost/oauth/withings/callback"}
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		if r.Form.Get("code") != "authorization-code" || r.Form.Get("grant_type") != "authorization_code" {
+			t.Errorf("unexpected form: %v", r.Form)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":0,"body":{"userid":"user-1","access_token":"access","refresh_token":"refresh","expires_in":3600}}`))
+	}))
+	defer tokenServer.Close()
+	a.tokenURL = tokenServer.URL
+	state, err := a.newOAuthState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/oauth/withings/callback?code=authorization-code&state="+url.QueryEscape(state), nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	count, err := a.store.LinkedUserCount(context.Background())
+	if err != nil || count != 1 {
+		t.Fatalf("linked account count = %d, error = %v", count, err)
+	}
 }
 
 func TestOAuthTokensAreEncryptedBeforeStorage(t *testing.T) {
