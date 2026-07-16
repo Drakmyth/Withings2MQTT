@@ -12,10 +12,39 @@ import (
 )
 
 const (
-	listenAddrEnv = "WITHINGS2MQTT_LISTEN_ADDR"
-	dbPathEnv     = "WITHINGS2MQTT_DB_PATH"
-	keyEnv        = "WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY"
+	listenAddrEnv           = "WITHINGS2MQTT_LISTEN_ADDR"
+	dbPathEnv               = "WITHINGS2MQTT_DB_PATH"
+	keyEnv                  = "WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY"
+	withingsClientIDEnv     = "WITHINGS2MQTT_WITHINGS_CLIENT_ID"
+	withingsClientSecretEnv = "WITHINGS2MQTT_WITHINGS_CLIENT_SECRET"
+	withingsRedirectURLEnv  = "WITHINGS2MQTT_WITHINGS_REDIRECT_URL"
 )
+
+type WithingsOAuthConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
+func (c WithingsOAuthConfig) Validate() error {
+	missing := make([]string, 0, 3)
+	for _, setting := range []struct {
+		name  string
+		value string
+	}{
+		{withingsClientIDEnv, c.ClientID},
+		{withingsClientSecretEnv, c.ClientSecret},
+		{withingsRedirectURLEnv, c.RedirectURL},
+	} {
+		if setting.value == "" {
+			missing = append(missing, setting.name)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("Withings account linking requires %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
 
 type Config struct {
 	ListenAddr         string
@@ -23,6 +52,7 @@ type Config struct {
 	TokenEncryptionKey []byte
 	AdminAllowRemote   bool
 	ShutdownTimeout    time.Duration
+	WithingsOAuth      WithingsOAuthConfig
 }
 
 func FromEnv() (Config, error) {
@@ -30,6 +60,11 @@ func FromEnv() (Config, error) {
 		ListenAddr:      valueOrDefault(listenAddrEnv, "127.0.0.1:8080"),
 		DBPath:          valueOrDefault(dbPathEnv, filepath.Join("data", "withings2mqtt.db")),
 		ShutdownTimeout: 15 * time.Second,
+		WithingsOAuth: WithingsOAuthConfig{
+			ClientID:     strings.TrimSpace(os.Getenv(withingsClientIDEnv)),
+			ClientSecret: strings.TrimSpace(os.Getenv(withingsClientSecretEnv)),
+			RedirectURL:  strings.TrimSpace(os.Getenv(withingsRedirectURLEnv)),
+		},
 	}
 	if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
 		return Config{}, fmt.Errorf("%s must be a host:port: %w", listenAddrEnv, err)
