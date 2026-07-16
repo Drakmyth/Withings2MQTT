@@ -39,6 +39,15 @@ docker compose up -d --build
 
 Visit `http://localhost:8080/admin`. Stop the service with `docker compose down`; the named volume preserves the database.
 
+If port 8080 is already in use, select another host port before starting Compose. For example, in PowerShell:
+
+```powershell
+$env:WITHINGS2MQTT_HTTP_PORT = "8081"
+docker compose up -d --build
+```
+
+Then visit `http://localhost:8081/admin`. This setting changes only the host-side Compose port; the service continues to listen on port 8080 inside the container. If Withings OAuth is configured, its registered redirect URL must use the selected host port.
+
 The Compose port is bound to `127.0.0.1` on the host. It enables remote admin requests inside the container because Docker bridge traffic does not appear as loopback to the service, while the host binding keeps the UI local-only.
 
 To run the image without Compose:
