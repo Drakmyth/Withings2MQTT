@@ -1,4 +1,4 @@
 {{define "admin"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Withings2MQTT</title><script src="/static/htmx-2.0.4.min.js"></script></head>
-<body><main><h1>Withings2MQTT</h1><section id="status" hx-get="/admin/status" hx-trigger="every 30s" hx-swap="outerHTML">{{template "status" .}}</section></main></body></html>{{end}}
+<body><main><h1>Withings2MQTT</h1>{{template "status" .}}</main></body></html>{{end}}
 {{define "status"}}<section id="status" hx-get="/admin/status" hx-trigger="every 30s" hx-swap="outerHTML"><p>Linked accounts: {{len .LinkedUsers}}</p>{{range .LinkedUsers}}<article><p>Withings user: {{.WithingsUserID}}</p><form method="post" action="/admin/withings/{{.WithingsUserID}}/unlink"><button type="submit">Unlink</button></form></article>{{end}}<p>Database: connected</p></section>{{end}}

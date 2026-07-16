@@ -171,11 +171,31 @@ func (a *App) consumeOAuthState(state string) bool {
 type tokenResponse struct {
 	Status int `json:"status"`
 	Body   struct {
-		UserID       string `json:"userid"`
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
+		UserID       withingsUserID `json:"userid"`
+		AccessToken  string         `json:"access_token"`
+		RefreshToken string         `json:"refresh_token"`
+		ExpiresIn    int            `json:"expires_in"`
 	} `json:"body"`
+}
+
+type withingsUserID string
+
+func (id *withingsUserID) UnmarshalJSON(data []byte) error {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	switch value := value.(type) {
+	case string:
+		*id = withingsUserID(value)
+	case json.Number:
+		*id = withingsUserID(value.String())
+	default:
+		return fmt.Errorf("invalid Withings user ID")
+	}
+	return nil
 }
 
 func (a *App) withingsCallback(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +226,7 @@ func (a *App) withingsCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token exchange failed", http.StatusBadGateway)
 		return
 	}
-	if err := a.SaveLinkedUser(r.Context(), token.Body.UserID, token.Body.AccessToken, token.Body.RefreshToken, time.Now().Add(time.Duration(token.Body.ExpiresIn)*time.Second)); err != nil {
+	if err := a.SaveLinkedUser(r.Context(), string(token.Body.UserID), token.Body.AccessToken, token.Body.RefreshToken, time.Now().Add(time.Duration(token.Body.ExpiresIn)*time.Second)); err != nil {
 		http.Error(w, "could not save linked account", http.StatusInternalServerError)
 		return
 	}

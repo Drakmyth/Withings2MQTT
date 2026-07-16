@@ -145,7 +145,7 @@ func TestWithingsCallbackCreatesLinkedAccount(t *testing.T) {
 			t.Errorf("unexpected form: %v", r.Form)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":0,"body":{"userid":"user-1","access_token":"access","refresh_token":"refresh","expires_in":3600}}`))
+		_, _ = w.Write([]byte(`{"status":0,"body":{"userid":12345,"access_token":"access","refresh_token":"refresh","expires_in":3600}}`))
 	}))
 	defer tokenServer.Close()
 	a.tokenURL = tokenServer.URL
@@ -162,6 +162,9 @@ func TestWithingsCallbackCreatesLinkedAccount(t *testing.T) {
 	count, err := a.store.LinkedUserCount(context.Background())
 	if err != nil || count != 1 {
 		t.Fatalf("linked account count = %d, error = %v", count, err)
+	}
+	if _, err := a.store.LinkedUser(context.Background(), "12345"); err != nil {
+		t.Fatalf("numeric Withings user ID was not persisted: %v", err)
 	}
 }
 
