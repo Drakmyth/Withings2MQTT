@@ -93,6 +93,86 @@ type LinkedUser struct {
 	TokenExpiry    time.Time
 }
 
+type Measurement struct {
+	WithingsUserID string
+	SourceGroupID  int64
+	Metric         string
+	Value          float64
+	Unit           string
+	ObservedAt     time.Time
+}
+
+func (s *Store) ImportMeasurements(ctx context.Context, userID, category string, measurements []Measurement, lastUpdate int64) (int, error) {
+	if userID == "" || category == "" {
+		return 0, fmt.Errorf("user ID and category are required")
+	}
+	for _, measurement := range measurements {
+		if measurement.Metric == "" || measurement.Unit == "" || measurement.ObservedAt.IsZero() {
+			return 0, fmt.Errorf("measurement metric, unit, and observed time are required")
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin measurement import: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	inserted := 0
+	for _, measurement := range measurements {
+		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO measurements
+			(withings_user_id, source_group_id, metric, value, unit, observed_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, measurement.SourceGroupID, measurement.Metric, measurement.Value, measurement.Unit, measurement.ObservedAt.UTC().Format(time.RFC3339Nano), now)
+		if err != nil {
+			return 0, fmt.Errorf("insert measurement: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("count inserted measurement: %w", err)
+		}
+		inserted += int(rows)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sync_cursors(withings_user_id, category, last_update, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(withings_user_id, category) DO UPDATE SET last_update=excluded.last_update, updated_at=excluded.updated_at`, userID, category, lastUpdate, now); err != nil {
+		return 0, fmt.Errorf("update sync cursor: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit measurement import: %w", err)
+	}
+	return inserted, nil
+}
+
+func (s *Store) SyncCursor(ctx context.Context, userID, category string) (int64, error) {
+	var cursor int64
+	err := s.db.QueryRowContext(ctx, "SELECT last_update FROM sync_cursors WHERE withings_user_id = ? AND category = ?", userID, category).Scan(&cursor)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return cursor, err
+}
+
+func (s *Store) Measurements(ctx context.Context, userID string) ([]Measurement, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT withings_user_id, source_group_id, metric, value, unit, observed_at FROM measurements WHERE withings_user_id = ? ORDER BY observed_at, metric", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var measurements []Measurement
+	for rows.Next() {
+		var measurement Measurement
+		var observedAt string
+		if err := rows.Scan(&measurement.WithingsUserID, &measurement.SourceGroupID, &measurement.Metric, &measurement.Value, &measurement.Unit, &observedAt); err != nil {
+			return nil, err
+		}
+		measurement.ObservedAt, err = time.Parse(time.RFC3339Nano, observedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse measurement time: %w", err)
+		}
+		measurements = append(measurements, measurement)
+	}
+	return measurements, rows.Err()
+}
+
 func (s *Store) SaveLinkedUser(ctx context.Context, user LinkedUser) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO linked_users(withings_user_id, access_token, refresh_token, token_expiry, created_at, updated_at)
