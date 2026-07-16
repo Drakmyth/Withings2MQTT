@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"net"
 	"net/http"
@@ -69,6 +70,47 @@ func (a *App) SaveLinkedUser(ctx context.Context, id, accessToken, refreshToken 
 		return err
 	}
 	return a.store.SaveLinkedUser(ctx, store.LinkedUser{WithingsUserID: id, AccessToken: access, RefreshToken: refresh, TokenExpiry: expiry})
+}
+
+// AccessToken returns a usable token, refreshing and persisting it when expired.
+func (a *App) AccessToken(ctx context.Context, id string) (string, error) {
+	user, err := a.store.LinkedUser(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("load linked user: %w", err)
+	}
+	access, err := a.cipher.Decrypt(user.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("decrypt access token: %w", err)
+	}
+	if time.Now().Before(user.TokenExpiry.Add(-time.Minute)) {
+		return string(access), nil
+	}
+	refresh, err := a.cipher.Decrypt(user.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("decrypt refresh token: %w", err)
+	}
+	values := url.Values{"action": {"requesttoken"}, "grant_type": {"refresh_token"}, "client_id": {a.cfg.WithingsOAuth.ClientID}, "client_secret": {a.cfg.WithingsOAuth.ClientSecret}, "refresh_token": {string(refresh)}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.tokenURL, strings.NewReader(values.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("create refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("refresh access token: %w", err)
+	}
+	defer resp.Body.Close()
+	var token tokenResponse
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&token) != nil || token.Status != 0 || token.Body.AccessToken == "" {
+		return "", fmt.Errorf("refresh access token: invalid response")
+	}
+	if token.Body.RefreshToken == "" {
+		token.Body.RefreshToken = string(refresh)
+	}
+	if err := a.SaveLinkedUser(ctx, id, token.Body.AccessToken, token.Body.RefreshToken, time.Now().Add(time.Duration(token.Body.ExpiresIn)*time.Second)); err != nil {
+		return "", fmt.Errorf("persist refreshed token: %w", err)
+	}
+	return token.Body.AccessToken, nil
 }
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()

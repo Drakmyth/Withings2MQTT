@@ -212,3 +212,44 @@ func TestLinkedAccountsPersistAndCanBeUnlinked(t *testing.T) {
 		t.Fatal("unlinked account remains available for synchronization")
 	}
 }
+
+func TestAccessTokenRefreshesExpiredTokenAndPersistsReplacement(t *testing.T) {
+	a := newTestApp(t)
+	a.cfg.WithingsOAuth = config.WithingsOAuthConfig{ClientID: "client-id", ClientSecret: "secret"}
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "expired-access", "old-refresh", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "old-refresh" {
+			t.Errorf("unexpected refresh form: %v", r.Form)
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}}`))
+	}))
+	defer tokenServer.Close()
+	a.tokenURL = tokenServer.URL
+	got, err := a.AccessToken(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "new-access" {
+		t.Fatalf("AccessToken() = %q", got)
+	}
+	stored, err := a.store.LinkedUser(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := a.cipher.Decrypt(stored.AccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := a.cipher.Decrypt(stored.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(access) != "new-access" || string(refresh) != "new-refresh" {
+		t.Fatalf("persisted tokens = %q, %q", access, refresh)
+	}
+}
