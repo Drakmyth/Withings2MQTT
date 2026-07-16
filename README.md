@@ -30,14 +30,28 @@ The three Withings settings may be omitted while the service is unlinked, but al
 
 ## Docker
 
+The simplest container setup uses Docker Compose. Generate an encryption key, then start the service:
+
+```sh
+export WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+docker compose up -d --build
+```
+
+Visit `http://localhost:8080/admin`. Stop the service with `docker compose down`; the named volume preserves the database.
+
+The Compose port is bound to `127.0.0.1` on the host. It enables remote admin requests inside the container because Docker bridge traffic does not appear as loopback to the service, while the host binding keeps the UI local-only.
+
+To run the image without Compose:
+
 ```sh
 docker build -t withings2mqtt .
-docker run --rm -p 8080:8080 -v withings2mqtt-data:/data \
+docker run --rm -p 127.0.0.1:8080:8080 -v withings2mqtt-data:/data \
   -e WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  -e WITHINGS2MQTT_ADMIN_ALLOW_REMOTE=true \
   withings2mqtt
 ```
 
-The image includes a Docker health check. It listens on all interfaces inside the container, but its admin UI remains localhost-only unless explicitly enabled.
+The image includes a Docker health check. If you publish the container on a non-loopback host interface, do not enable remote admin access without adding authentication and appropriate network controls.
 
 ## Development
 
