@@ -21,8 +21,12 @@ The service listens on `127.0.0.1:8080` by default. Visit `http://127.0.0.1:8080
 | `WITHINGS2MQTT_LISTEN_ADDR` | `127.0.0.1:8080` | HTTP listener address. |
 | `WITHINGS2MQTT_DB_PATH` | `data/withings2mqtt.db` | SQLite database path. |
 | `WITHINGS2MQTT_ADMIN_ALLOW_REMOTE` | `false` | Allow `/admin` from non-loopback clients. |
+| `WITHINGS2MQTT_WITHINGS_CLIENT_ID` | empty | Withings developer application client ID. |
+| `WITHINGS2MQTT_WITHINGS_CLIENT_SECRET` | empty | Withings developer application client secret. |
+| `WITHINGS2MQTT_WITHINGS_REDIRECT_URL` | empty | OAuth callback URL registered with Withings. |
 
 The admin handler additionally rejects non-loopback requests unless `WITHINGS2MQTT_ADMIN_ALLOW_REMOTE=true`. Do not expose it publicly without appropriate network controls.
+The three Withings settings may be omitted while the service is unlinked, but all three are required before starting account linking.
 
 ## Docker
 
