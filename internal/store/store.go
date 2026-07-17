@@ -102,6 +102,19 @@ type Measurement struct {
 	ObservedAt     time.Time
 }
 
+type MeasurementPage struct {
+	Items      []Measurement
+	Page       int
+	PageSize   int
+	TotalItems int
+	TotalPages int
+}
+
+type SyncCursorStatus struct {
+	LastUpdate int64
+	UpdatedAt  time.Time
+}
+
 func (s *Store) ImportMeasurements(ctx context.Context, userID, category string, measurements []Measurement, lastUpdate int64) (int, error) {
 	if userID == "" || category == "" {
 		return 0, fmt.Errorf("user ID and category are required")
@@ -167,6 +180,92 @@ func (s *Store) Measurements(ctx context.Context, userID string) ([]Measurement,
 		if err := rows.Scan(&measurement.WithingsUserID, &measurement.SourceGroupID, &measurement.Metric, &measurement.Value, &measurement.Unit, &observedAt); err != nil {
 			return nil, err
 		}
+		measurement.ObservedAt, err = time.Parse(time.RFC3339Nano, observedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse measurement time: %w", err)
+		}
+		measurements = append(measurements, measurement)
+	}
+	return measurements, rows.Err()
+}
+
+func (s *Store) LatestMeasurements(ctx context.Context, userID string) ([]Measurement, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.withings_user_id, m.source_group_id, m.metric, m.value, m.unit, m.observed_at
+		FROM measurements m
+		WHERE m.withings_user_id = ? AND m.id = (
+			SELECT latest.id FROM measurements latest
+			WHERE latest.withings_user_id = m.withings_user_id AND latest.metric = m.metric
+			ORDER BY latest.observed_at DESC, latest.id DESC LIMIT 1
+		)
+		ORDER BY CASE m.metric WHEN 'weight' THEN 0 ELSE 1 END, m.metric`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMeasurements(rows)
+}
+
+func (s *Store) MeasurementHistory(ctx context.Context, userID, metric string, page, pageSize int) (MeasurementPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 50
+	}
+	filter := "withings_user_id = ?"
+	args := []any{userID}
+	if metric != "" {
+		filter += " AND metric = ?"
+		args = append(args, metric)
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM measurements WHERE "+filter, args...).Scan(&total); err != nil {
+		return MeasurementPage{}, err
+	}
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages > 0 && page > totalPages {
+		page = totalPages
+	}
+	queryArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
+	rows, err := s.db.QueryContext(ctx, `SELECT withings_user_id, source_group_id, metric, value, unit, observed_at
+		FROM measurements WHERE `+filter+` ORDER BY observed_at DESC, source_group_id DESC, metric LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return MeasurementPage{}, err
+	}
+	defer rows.Close()
+	items, err := scanMeasurements(rows)
+	return MeasurementPage{Items: items, Page: page, PageSize: pageSize, TotalItems: total, TotalPages: totalPages}, err
+}
+
+func (s *Store) SyncStatus(ctx context.Context, userID, category string) (SyncCursorStatus, error) {
+	var status SyncCursorStatus
+	var updatedAt string
+	err := s.db.QueryRowContext(ctx, "SELECT last_update, updated_at FROM sync_cursors WHERE withings_user_id = ? AND category = ?", userID, category).Scan(&status.LastUpdate, &updatedAt)
+	if err == sql.ErrNoRows {
+		return status, nil
+	}
+	if err != nil {
+		return status, err
+	}
+	status.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	return status, err
+}
+
+type rowScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+func scanMeasurements(rows rowScanner) ([]Measurement, error) {
+	var measurements []Measurement
+	for rows.Next() {
+		var measurement Measurement
+		var observedAt string
+		if err := rows.Scan(&measurement.WithingsUserID, &measurement.SourceGroupID, &measurement.Metric, &measurement.Value, &measurement.Unit, &observedAt); err != nil {
+			return nil, err
+		}
+		var err error
 		measurement.ObservedAt, err = time.Parse(time.RFC3339Nano, observedAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse measurement time: %w", err)

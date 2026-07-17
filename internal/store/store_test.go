@@ -101,3 +101,42 @@ func TestFailedMeasurementImportDoesNotAdvanceCursor(t *testing.T) {
 		t.Fatalf("cursor advanced after failure: %d, %v", cursor, err)
 	}
 }
+
+func TestMeasurementHistoryIsFilteredPaginatedAndLatest(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.SaveLinkedUser(ctx, LinkedUser{WithingsUserID: "user-1", AccessToken: []byte("a"), RefreshToken: []byte("r"), TokenExpiry: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	measurements := []Measurement{
+		{SourceGroupID: 1, Metric: "weight", Value: 80, Unit: "kg", ObservedAt: time.Unix(100, 0)},
+		{SourceGroupID: 2, Metric: "weight", Value: 81, Unit: "kg", ObservedAt: time.Unix(200, 0)},
+		{SourceGroupID: 2, Metric: "fat_ratio", Value: 20, Unit: "%", ObservedAt: time.Unix(200, 0)},
+	}
+	if _, err := s.ImportMeasurements(ctx, "user-1", "weight", measurements, 300); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestMeasurements(ctx, "user-1")
+	if err != nil || len(latest) != 2 || latest[0].Metric != "weight" || latest[0].Value != 81 {
+		t.Fatalf("latest = %+v, %v", latest, err)
+	}
+	page, err := s.MeasurementHistory(ctx, "user-1", "weight", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.TotalItems != 2 || page.TotalPages != 2 || len(page.Items) != 1 || page.Items[0].Value != 81 {
+		t.Fatalf("page = %+v", page)
+	}
+	page, err = s.MeasurementHistory(ctx, "user-1", "weight", 2, 1)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Value != 80 {
+		t.Fatalf("second page = %+v, %v", page, err)
+	}
+	status, err := s.SyncStatus(ctx, "user-1", "weight")
+	if err != nil || status.LastUpdate != 300 || status.UpdatedAt.IsZero() {
+		t.Fatalf("sync status = %+v, %v", status, err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ import (
 	"github.com/Drakmyth/withings2mqtt/internal/withings"
 )
 
-//go:embed templates/admin.html static/htmx-2.0.4.min.js
+//go:embed templates/*.html static/*
 var assets embed.FS
 
 const withingsAuthorizeURL = "https://account.withings.com/oauth2_user/authorize2"
@@ -50,6 +51,15 @@ type syncResult struct {
 	Failed  bool
 }
 
+type scalePageData struct {
+	UserID        string
+	Latest        []store.Measurement
+	SyncStatus    store.SyncCursorStatus
+	History       store.MeasurementPage
+	Metric        string
+	MetricOptions []string
+}
+
 func New(cfg config.Config) (*App, error) {
 	s, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -60,7 +70,14 @@ func New(cfg config.Config) (*App, error) {
 		s.Close()
 		return nil, err
 	}
-	templates, err := template.ParseFS(assets, "templates/admin.html")
+	templates, err := template.New("").Funcs(template.FuncMap{
+		"formatMetric": formatMetric,
+		"formatTime":   func(value time.Time) string { return value.UTC().Format("2006-01-02 15:04 UTC") },
+		"formatValue":  func(value float64) string { return strconv.FormatFloat(value, 'f', -1, 64) },
+		"pageURL":      scalePageURL,
+		"sub":          func(value int) int { return value - 1 },
+		"add":          func(value int) int { return value + 1 },
+	}).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		s.Close()
 		return nil, err
@@ -134,8 +151,26 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /oauth/withings/callback", noStore(a.withingsCallback))
 	mux.HandleFunc("POST /admin/withings/{id}/unlink", noStore(a.unlinkWithings))
 	mux.HandleFunc("POST /admin/withings/{id}/sync/weight", noStore(a.manualWeightSync))
+	mux.HandleFunc("GET /admin/withings/{id}/scale", noStore(a.scalePage))
+	mux.HandleFunc("GET /admin/withings/{id}/scale/history", noStore(a.scaleHistory))
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
+}
+
+func formatMetric(metric string) string {
+	labels := map[string]string{"weight": "Weight", "fat_free_mass": "Fat-free mass", "fat_ratio": "Fat ratio", "fat_mass": "Fat mass", "muscle_mass": "Muscle mass", "hydration": "Hydration", "bone_mass": "Bone mass"}
+	if label := labels[metric]; label != "" {
+		return label
+	}
+	return metric
+}
+
+func scalePageURL(userID, metric string, page int) string {
+	values := url.Values{"page": {strconv.Itoa(page)}}
+	if metric != "" {
+		values.Set("metric", metric)
+	}
+	return "/admin/withings/" + url.PathEscape(userID) + "/scale/history?" + values.Encode()
 }
 
 func noStore(next http.HandlerFunc) http.HandlerFunc {
@@ -310,6 +345,61 @@ func (a *App) manualWeightSync(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Redirect(w, r, "/admin?"+values.Encode(), http.StatusSeeOther)
 	})(w, r)
+}
+
+var scaleMetrics = []string{"weight", "fat_free_mass", "fat_ratio", "fat_mass", "muscle_mass", "hydration", "bone_mass"}
+
+func (a *App) scalePage(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) { a.renderScale(w, r, false) })(w, r)
+}
+
+func (a *App) scaleHistory(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		a.renderScale(w, r, strings.EqualFold(r.Header.Get("HX-Request"), "true"))
+	})(w, r)
+}
+
+func (a *App) renderScale(w http.ResponseWriter, r *http.Request, fragment bool) {
+	userID := r.PathValue("id")
+	if _, err := a.store.LinkedUser(r.Context(), userID); err != nil {
+		http.Error(w, "linked account not found", http.StatusNotFound)
+		return
+	}
+	metric := r.URL.Query().Get("metric")
+	if metric != "" {
+		valid := false
+		for _, option := range scaleMetrics {
+			valid = valid || metric == option
+		}
+		if !valid {
+			http.Error(w, "invalid scale metric", http.StatusBadRequest)
+			return
+		}
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	latest, err := a.store.LatestMeasurements(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	history, err := a.store.MeasurementHistory(r.Context(), userID, metric, page, 50)
+	if err != nil {
+		http.Error(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	status, err := a.store.SyncStatus(r.Context(), userID, "weight")
+	if err != nil {
+		http.Error(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := scalePageData{UserID: userID, Latest: latest, SyncStatus: status, History: history, Metric: metric, MetricOptions: scaleMetrics}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Add("Vary", "HX-Request")
+	if fragment {
+		_ = a.templates.ExecuteTemplate(w, "scale-history", data)
+		return
+	}
+	_ = a.templates.ExecuteTemplate(w, "scale", data)
 }
 
 func (a *App) unlinkWithings(w http.ResponseWriter, r *http.Request) {

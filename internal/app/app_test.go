@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Drakmyth/withings2mqtt/internal/config"
+	"github.com/Drakmyth/withings2mqtt/internal/store"
 	"github.com/Drakmyth/withings2mqtt/internal/withings"
 )
 
@@ -211,7 +212,7 @@ func TestLinkedAccountsPersistAndCanBeUnlinked(t *testing.T) {
 	r.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, r)
-	if !strings.Contains(w.Body.String(), "Withings user: user-1") || !strings.Contains(w.Body.String(), `hx-trigger="every 30s"`) {
+	if !strings.Contains(w.Body.String(), "Withings user user-1") || !strings.Contains(w.Body.String(), `hx-trigger="every 30s"`) {
 		t.Fatalf("unexpected status: %s", w.Body.String())
 	}
 	r = httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/unlink", nil)
@@ -328,5 +329,50 @@ func TestManualWeightSyncFailureDoesNotAdvanceCursor(t *testing.T) {
 	cursor, err := a.store.SyncCursor(context.Background(), "user-1", "weight")
 	if err != nil || cursor != 0 {
 		t.Fatalf("cursor advanced after failure: %d, %v", cursor, err)
+	}
+}
+
+func TestScalePageShowsLatestAndPaginatedHistory(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access", "refresh", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	measurements := make([]store.Measurement, 0, 61)
+	for i := 0; i < 60; i++ {
+		measurements = append(measurements, store.Measurement{SourceGroupID: int64(i + 1), Metric: "weight", Value: float64(70 + i), Unit: "kg", ObservedAt: time.Unix(int64(1700000000+i), 0)})
+	}
+	measurements = append(measurements, store.Measurement{SourceGroupID: 60, Metric: "fat_ratio", Value: 20.5, Unit: "%", ObservedAt: time.Unix(1700000059, 0)})
+	if _, err := a.store.ImportMeasurements(context.Background(), "user-1", "weight", measurements, 1700000100); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/admin/withings/user-1/scale", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Latest measurements") || !strings.Contains(w.Body.String(), "129 kg") || !strings.Contains(w.Body.String(), "Page 1 of 2") {
+		t.Fatalf("unexpected scale page: %d %s", w.Code, w.Body.String())
+	}
+	if rows := strings.Count(w.Body.String(), "<tr>"); rows != 51 {
+		t.Fatalf("table rows = %d, want header plus 50 bounded results", rows)
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/admin/withings/user-1/scale/history?metric=fat_ratio", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("HX-Request", "true")
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "<!doctype html>") || !strings.Contains(w.Body.String(), "20.5 %") || !strings.Contains(w.Body.String(), "1 measurements") {
+		t.Fatalf("unexpected history fragment: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminStylesheetIsServedLocally(t *testing.T) {
+	a := newTestApp(t)
+	r := httptest.NewRequest(http.MethodGet, "/static/admin.css", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), ".metric-grid") {
+		t.Fatalf("unexpected stylesheet response: %d", w.Code)
 	}
 }
