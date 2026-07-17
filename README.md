@@ -1,6 +1,8 @@
 # Withings2MQTT
 
-Withings2MQTT is a local service that will link Withings accounts, persist their health data, and publish it to MQTT. This first release establishes its secure local server and storage foundation.
+Withings2MQTT is a local service that links Withings accounts, persists their health data, and will publish it to MQTT. The project is under active development; account linking and scale-data synchronization are implemented, while activity, sleep, background sync, and MQTT publishing remain planned work.
+
+Health measurements and OAuth credentials are sensitive. Keep the service local, protect its database and encryption key, and review [SECURITY.md](SECURITY.md) before deploying it beyond a trusted machine.
 
 ## Run locally
 
@@ -10,6 +12,8 @@ Generate an encryption key once and keep it secret; it encrypts OAuth tokens bef
 export WITHINGS2MQTT_TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 go run .
 ```
+
+Alternatively, copy `.env.example` to `.env`, generate the required encryption key, and fill in Withings OAuth settings when you are ready to link an account. `.env` is ignored by Git and loaded by the included VS Code launch configuration and Docker Compose.
 
 The service listens on `127.0.0.1:8080` by default. Visit `http://127.0.0.1:8080/healthz` for a health check and `http://127.0.0.1:8080/admin` for the local administration page. Data is stored at `data/withings2mqtt.db` by default.
 
@@ -73,6 +77,13 @@ The image includes a Docker health check. If you publish the container on a non-
 ```sh
 go test ./...
 go build ./...
+go vet ./...
 ```
 
 HTMX 2.0.4 is vendored at `internal/app/static/htmx-2.0.4.min.js`; the admin UI makes no external browser asset request.
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and project constraints.
+
+## License
+
+Withings2MQTT is available under the [MIT License](LICENSE.md). The vendored HTMX asset is distributed under the Zero-Clause BSD license included beside the asset.

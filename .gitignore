@@ -3,6 +3,14 @@
 *.log
 .env
 go-template-cli
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Local secrets and keys
+*.pem
+*.key
 
 # VSCode
 .vscode/*

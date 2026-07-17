@@ -1,0 +1,16 @@
+.git
+.github
+.vscode
+.env
+.env.*
+!.env.example
+data
+*.db
+*.db-shm
+*.db-wal
+*.pem
+*.key
+AGENTS.md
+plan.md
+README.md
+LICENSE.md

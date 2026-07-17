@@ -2,25 +2,13 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch subcommand",
+            "name": "Launch Withings2MQTT",
             "type": "go",
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}",
             "debugAdapter": "dlv-dap",
-            "env": {},
-            "args": ["subcommand", "Hello, World!"],
-            "console": "internalConsole"
-        },
-        {
-            "name": "Launch subcommand with flag",
-            "type": "go",
-            "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}",
-            "debugAdapter": "dlv-dap",
-            "env": {},
-            "args": ["subcommand", "-f", "1234567890", "Hello, World!"],
+            "envFile": "${workspaceFolder}/.env",
             "console": "internalConsole"
         }
     ]
