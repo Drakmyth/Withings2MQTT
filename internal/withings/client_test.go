@@ -110,3 +110,65 @@ func TestNormalizeMeasurementsHandlesOptionalComposition(t *testing.T) {
 		t.Fatalf("objective group was imported: %+v", got)
 	}
 }
+
+func TestFetchDailyActivityDecodesSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/measure" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("action") != "getactivity" || r.Form.Get("startdateymd") != "2026-07-15" || r.Form.Get("enddateymd") != "2026-07-16" {
+			t.Errorf("unexpected form: %v", r.Form)
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"activities":[{"date":"2026-07-15","timezone":"America/New_York","steps":8123,"distance":6123.5,"calories":428.2,"elevation":14.5},{"date":"2026-07-16","timezone":"America/New_York","steps":0}]}}`))
+	}))
+	defer server.Close()
+
+	activities, err := (Client{BaseURL: server.URL, HTTPClient: server.Client()}).FetchDailyActivity(
+		context.Background(), "access-token", time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activities) != 2 || activities[0].Date != "2026-07-15" || activities[0].Steps != 8123 {
+		t.Fatalf("activities = %+v", activities)
+	}
+	if activities[0].Distance == nil || *activities[0].Distance != 6123.5 || activities[0].Calories == nil || activities[0].Elevation == nil {
+		t.Fatalf("optional metrics = %+v", activities[0])
+	}
+	if activities[1].Distance != nil || activities[1].Calories != nil || activities[1].Elevation != nil {
+		t.Fatalf("omitted optional metrics were not preserved: %+v", activities[1])
+	}
+}
+
+func TestFetchDailyActivityFollowsPaginationAndRejectsErrors(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"status":0,"body":{"activities":[{"date":"2026-07-15","steps":1}],"more":1,"offset":10}}`))
+			return
+		}
+		if r.Form.Get("offset") != "10" {
+			t.Errorf("offset = %q", r.Form.Get("offset"))
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"activities":[{"date":"2026-07-16","steps":2}]}}`))
+	}))
+	defer server.Close()
+	start := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	got, err := (Client{BaseURL: server.URL}).FetchDailyActivity(context.Background(), "token", start, start.AddDate(0, 0, 1))
+	if err != nil || requests != 2 || len(got) != 2 {
+		t.Fatalf("activities = %+v after %d requests, error = %v", got, requests, err)
+	}
+	if _, err := (Client{BaseURL: server.URL}).FetchDailyActivity(context.Background(), "token", start, start.AddDate(0, 0, -1)); err == nil {
+		t.Fatal("expected invalid date range error")
+	}
+}
