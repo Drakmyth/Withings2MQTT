@@ -152,7 +152,8 @@ func TestDailyStepsPersistWithTimestampAndUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	observedAt := time.Date(2026, 7, 15, 0, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
-	activity := DailyActivity{WithingsUserID: "user-1", Date: "2026-07-15", Steps: 8123, StepsUnit: "steps", ObservedAt: observedAt}
+	distance, calories, elevation := 6123.5, 428.2, 14.5
+	activity := DailyActivity{WithingsUserID: "user-1", Date: "2026-07-15", Steps: 8123, StepsUnit: "steps", Distance: &distance, DistanceUnit: "m", Calories: &calories, CaloriesUnit: "kcal", Elevation: &elevation, ElevationUnit: "m", ObservedAt: observedAt}
 	if err := s.SaveDailyActivity(ctx, activity); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +179,9 @@ func TestDailyStepsPersistWithTimestampAndUnits(t *testing.T) {
 	if !activities[0].ObservedAt.Equal(observedAt) {
 		t.Fatalf("observed at = %v, want %v", activities[0].ObservedAt, observedAt)
 	}
+	if activities[0].Distance == nil || *activities[0].Distance != distance || activities[0].DistanceUnit != "m" || activities[0].Calories == nil || activities[0].Elevation == nil {
+		t.Fatalf("optional metrics = %+v", activities[0])
+	}
 }
 
 func TestDailyStepsValidation(t *testing.T) {
@@ -189,10 +193,42 @@ func TestDailyStepsValidation(t *testing.T) {
 	invalid := []DailyActivity{
 		{},
 		{WithingsUserID: "user-1", Date: "2026-07-15", Steps: -1, StepsUnit: "steps", ObservedAt: time.Now()},
+		{WithingsUserID: "user-1", Date: "2026-07-15", StepsUnit: "steps", Distance: new(float64), ObservedAt: time.Now()},
 	}
 	for _, activity := range invalid {
 		if err := s.SaveDailyActivity(context.Background(), activity); err == nil {
 			t.Fatalf("SaveDailyActivity(%+v) succeeded", activity)
 		}
+	}
+}
+
+func TestDailyActivityImportAdvancesCursorAtomically(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "activity-import.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.SaveLinkedUser(ctx, LinkedUser{WithingsUserID: "user-1", AccessToken: []byte("a"), RefreshToken: []byte("r"), TokenExpiry: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	activities := []DailyActivity{{Date: "2026-07-15", Steps: 100, StepsUnit: "steps", ObservedAt: time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)}}
+	changed, err := s.ImportDailyActivities(ctx, "user-1", activities, 200)
+	if err != nil || changed != 1 {
+		t.Fatalf("import = %d, %v", changed, err)
+	}
+	changed, err = s.ImportDailyActivities(ctx, "user-1", activities, 300)
+	if err != nil || changed != 0 {
+		t.Fatalf("duplicate import = %d, %v", changed, err)
+	}
+	if cursor, err := s.SyncCursor(ctx, "user-1", "activity"); err != nil || cursor != 300 {
+		t.Fatalf("cursor = %d, %v", cursor, err)
+	}
+	invalid := []DailyActivity{{Date: "2026-07-16", StepsUnit: "steps"}}
+	if _, err := s.ImportDailyActivities(ctx, "user-1", invalid, 400); err == nil {
+		t.Fatal("invalid import succeeded")
+	}
+	if cursor, _ := s.SyncCursor(ctx, "user-1", "activity"); cursor != 300 {
+		t.Fatalf("cursor advanced after failed import: %d", cursor)
 	}
 }

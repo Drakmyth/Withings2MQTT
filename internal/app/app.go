@@ -152,6 +152,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/withings/{id}/unlink", noStore(a.unlinkWithings))
 	mux.HandleFunc("POST /admin/withings/{id}/sync/weight", noStore(a.manualWeightSync))
 	mux.HandleFunc("POST /admin/withings/{id}/sync/weight/all", noStore(a.manualFullWeightSync))
+	mux.HandleFunc("POST /admin/withings/{id}/sync/activity", noStore(a.manualActivitySync))
 	mux.HandleFunc("GET /admin/withings/{id}/scale", noStore(a.scalePage))
 	mux.HandleFunc("GET /admin/withings/{id}/scale/history", noStore(a.scaleHistory))
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
@@ -334,6 +335,77 @@ func (a *App) syncWeightFrom(ctx context.Context, userID string, cursor int64) (
 		measurements = append(measurements, store.Measurement{WithingsUserID: userID, SourceGroupID: measurement.SourceGroupID, Metric: measurement.Metric, Value: measurement.Value, Unit: measurement.Unit, ObservedAt: measurement.ObservedAt})
 	}
 	return a.store.ImportMeasurements(ctx, userID, "weight", measurements, result.UpdateTime)
+}
+
+func (a *App) SyncActivity(ctx context.Context, userID string) (int, error) {
+	cursor, err := a.store.SyncCursor(ctx, userID, "activity")
+	if err != nil {
+		return 0, fmt.Errorf("load activity cursor: %w", err)
+	}
+	endDate := time.Now().UTC().Truncate(24 * time.Hour)
+	startDate := endDate.AddDate(0, 0, -30)
+	if cursor > 0 {
+		startDate = time.Unix(cursor, 0).UTC().Truncate(24 * time.Hour)
+	}
+	token, err := a.AccessToken(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	result, err := a.withings.FetchDailyActivity(ctx, token, startDate, endDate)
+	if err != nil {
+		return 0, err
+	}
+	activities := make([]store.DailyActivity, 0, len(result))
+	for _, activity := range result {
+		observedAt, err := activityObservedAt(activity.Date, activity.Timezone)
+		if err != nil {
+			return 0, err
+		}
+		activities = append(activities, store.DailyActivity{
+			Date: activity.Date, Steps: activity.Steps, StepsUnit: "steps",
+			Distance: activity.Distance, DistanceUnit: "m",
+			Calories: activity.Calories, CaloriesUnit: "kcal",
+			Elevation: activity.Elevation, ElevationUnit: "m",
+			ObservedAt: observedAt,
+		})
+	}
+	return a.store.ImportDailyActivities(ctx, userID, activities, endDate.Unix())
+}
+
+func activityObservedAt(date, timezone string) (time.Time, error) {
+	location := time.UTC
+	if timezone != "" {
+		var err error
+		location, err = time.LoadLocation(timezone)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("load activity timezone %q: %w", timezone, err)
+		}
+	}
+	observedAt, err := time.ParseInLocation("2006-01-02", date, location)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse activity date %q: %w", date, err)
+	}
+	return observedAt, nil
+}
+
+func (a *App) manualActivitySync(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		count, err := a.SyncActivity(r.Context(), r.PathValue("id"))
+		result := syncResult{Message: fmt.Sprintf("Imported or updated %d daily activity summaries.", count)}
+		if err != nil {
+			result = syncResult{Message: "Activity sync failed.", Failed: true}
+		}
+		if strings.EqualFold(r.Header.Get("HX-Request"), "true") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = a.templates.ExecuteTemplate(w, "sync-result", result)
+			return
+		}
+		values := url.Values{"sync": {result.Message}}
+		if result.Failed {
+			values.Set("sync_failed", "true")
+		}
+		http.Redirect(w, r, "/admin?"+values.Encode(), http.StatusSeeOther)
+	})(w, r)
 }
 
 func (a *App) manualWeightSync(w http.ResponseWriter, r *http.Request) {
