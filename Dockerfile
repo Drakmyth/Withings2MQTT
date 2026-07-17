@@ -9,7 +9,7 @@ COPY . ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /withings2mqtt .
 
 # Production Release Stage. Alpine provides wget for the Docker health check.
-FROM alpine:3.21
+FROM alpine:3.24
 WORKDIR /app
 RUN adduser -D -u 1001 appuser && mkdir -p /data && chown appuser:appuser /data
 COPY --from=build /withings2mqtt /usr/local/bin/withings2mqtt

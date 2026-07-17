@@ -5,13 +5,41 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      routine-transitive-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        # Keep direct dependencies in focused pull requests. Update this list
+        # whenever a direct requirement is added to go.mod.
+        exclude-patterns:
+          - modernc.org/sqlite
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      routine-docker-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      routine-actions-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
