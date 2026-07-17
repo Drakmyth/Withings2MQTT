@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,15 +32,17 @@ const withingsTokenURL = "https://wbsapi.withings.net/v2/oauth2"
 type oauthState struct{ expiresAt time.Time }
 
 type App struct {
-	cfg        config.Config
-	store      *store.Store
-	cipher     *crypt.TokenCipher
-	templates  *template.Template
-	httpClient *http.Client
-	tokenURL   string
-	withings   withings.Client
-	statesMu   sync.Mutex
-	states     map[string]oauthState
+	cfg         config.Config
+	store       *store.Store
+	cipher      *crypt.TokenCipher
+	templates   *template.Template
+	httpClient  *http.Client
+	tokenURL    string
+	withings    withings.Client
+	statesMu    sync.Mutex
+	states      map[string]oauthState
+	syncLocksMu sync.Mutex
+	syncLocks   map[string]*sync.Mutex
 }
 type adminData struct {
 	LinkedUsers []store.LinkedUser
@@ -82,7 +85,7 @@ func New(cfg config.Config) (*App, error) {
 		s.Close()
 		return nil, err
 	}
-	return &App{cfg: cfg, store: s, cipher: cipher, templates: templates, httpClient: http.DefaultClient, tokenURL: withingsTokenURL, withings: withings.Client{BaseURL: withings.DefaultBaseURL, HTTPClient: http.DefaultClient}, states: make(map[string]oauthState)}, nil
+	return &App{cfg: cfg, store: s, cipher: cipher, templates: templates, httpClient: http.DefaultClient, tokenURL: withingsTokenURL, withings: withings.Client{BaseURL: withings.DefaultBaseURL, HTTPClient: http.DefaultClient}, states: make(map[string]oauthState), syncLocks: make(map[string]*sync.Mutex)}, nil
 }
 func (a *App) Close() error { return a.store.Close() }
 
@@ -338,6 +341,9 @@ func (a *App) syncWeightFrom(ctx context.Context, userID string, cursor int64) (
 }
 
 func (a *App) SyncActivity(ctx context.Context, userID string) (int, error) {
+	unlock := a.lockSync(userID, "activity")
+	defer unlock()
+
 	cursor, err := a.store.SyncCursor(ctx, userID, "activity")
 	if err != nil {
 		return 0, fmt.Errorf("load activity cursor: %w", err)
@@ -372,6 +378,19 @@ func (a *App) SyncActivity(ctx context.Context, userID string) (int, error) {
 	return a.store.ImportDailyActivities(ctx, userID, activities, endDate.Unix())
 }
 
+func (a *App) lockSync(userID, category string) func() {
+	key := userID + "\x00" + category
+	a.syncLocksMu.Lock()
+	lock := a.syncLocks[key]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		a.syncLocks[key] = lock
+	}
+	a.syncLocksMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
 func activityObservedAt(date, timezone string) (time.Time, error) {
 	location := time.UTC
 	if timezone != "" {
@@ -393,6 +412,7 @@ func (a *App) manualActivitySync(w http.ResponseWriter, r *http.Request) {
 		count, err := a.SyncActivity(r.Context(), r.PathValue("id"))
 		result := syncResult{Message: fmt.Sprintf("Imported or updated %d daily activity summaries.", count)}
 		if err != nil {
+			log.Printf("activity sync failed for Withings user %q: %v", r.PathValue("id"), err)
 			result = syncResult{Message: "Activity sync failed.", Failed: true}
 		}
 		if strings.EqualFold(r.Header.Get("HX-Request"), "true") {

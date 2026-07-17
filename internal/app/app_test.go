@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -406,6 +407,66 @@ func TestManualActivitySyncFailureDoesNotAdvanceCursor(t *testing.T) {
 	}
 	if cursor, err := a.store.SyncCursor(context.Background(), "user-1", "activity"); err != nil || cursor != 0 {
 		t.Fatalf("cursor advanced after failure: %d, %v", cursor, err)
+	}
+}
+
+func TestConcurrentActivitySyncsSerializeCursorReads(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var requestsMu sync.Mutex
+	var startDates []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		requestsMu.Lock()
+		startDates = append(startDates, r.Form.Get("startdateymd"))
+		requestNumber := len(startDates)
+		requestsMu.Unlock()
+		if requestNumber == 1 {
+			close(firstRequest)
+			<-releaseFirst
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"activities":[]}}`))
+	}))
+	defer server.Close()
+	a.withings = withings.Client{BaseURL: server.URL, HTTPClient: server.Client()}
+
+	errors := make(chan error, 2)
+	go func() {
+		_, err := a.SyncActivity(context.Background(), "user-1")
+		errors <- err
+	}()
+	<-firstRequest
+	go func() {
+		_, err := a.SyncActivity(context.Background(), "user-1")
+		errors <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	requestsMu.Lock()
+	requestsBeforeRelease := len(startDates)
+	requestsMu.Unlock()
+	if requestsBeforeRelease != 1 {
+		t.Fatalf("concurrent request reached Withings before the first import completed: %d requests", requestsBeforeRelease)
+	}
+	close(releaseFirst)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if len(startDates) != 2 {
+		t.Fatalf("start dates = %v", startDates)
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	if startDates[0] == today || startDates[1] != today {
+		t.Fatalf("start dates = %v; second sync should read the cursor written by the first", startDates)
 	}
 }
 
