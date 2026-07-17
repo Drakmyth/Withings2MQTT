@@ -29,6 +29,90 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+// DailyActivity is one calendar day's activity summary returned by Withings.
+// Optional metrics use pointers so an omitted value is distinct from zero.
+type DailyActivity struct {
+	Date      string   `json:"date"`
+	Timezone  string   `json:"timezone"`
+	Steps     int      `json:"steps"`
+	Distance  *float64 `json:"distance"`
+	Calories  *float64 `json:"calories"`
+	Elevation *float64 `json:"elevation"`
+}
+
+type activityResponse struct {
+	Status int `json:"status"`
+	Body   struct {
+		Activities []DailyActivity `json:"activities"`
+		More       int             `json:"more"`
+		Offset     int             `json:"offset"`
+	} `json:"body"`
+}
+
+// FetchDailyActivity returns daily summaries in the inclusive date range.
+func (c Client) FetchDailyActivity(ctx context.Context, accessToken string, startDate, endDate time.Time) ([]DailyActivity, error) {
+	if startDate.IsZero() || endDate.IsZero() || endDate.Before(startDate) {
+		return nil, fmt.Errorf("fetch daily activity: invalid date range")
+	}
+	var activities []DailyActivity
+	offset := 0
+	for {
+		page, err := c.fetchActivityPage(ctx, accessToken, startDate, endDate, offset)
+		if err != nil {
+			return nil, err
+		}
+		activities = append(activities, page.Body.Activities...)
+		if page.Body.More == 0 {
+			return activities, nil
+		}
+		if page.Body.Offset <= offset {
+			return nil, fmt.Errorf("fetch daily activity: pagination offset did not advance")
+		}
+		offset = page.Body.Offset
+	}
+}
+
+func (c Client) fetchActivityPage(ctx context.Context, accessToken string, startDate, endDate time.Time, offset int) (activityResponse, error) {
+	baseURL := strings.TrimRight(c.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	values := url.Values{
+		"action":       {"getactivity"},
+		"startdateymd": {startDate.Format("2006-01-02")},
+		"enddateymd":   {endDate.Format("2006-01-02")},
+	}
+	if offset > 0 {
+		values.Set("offset", strconv.Itoa(offset))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v2/measure", strings.NewReader(values.Encode()))
+	if err != nil {
+		return activityResponse{}, fmt.Errorf("create daily activity request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := c.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return activityResponse{}, fmt.Errorf("fetch daily activity: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return activityResponse{}, fmt.Errorf("fetch daily activity: unexpected HTTP status %d", resp.StatusCode)
+	}
+	var decoded activityResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return activityResponse{}, fmt.Errorf("decode daily activity: %w", err)
+	}
+	if decoded.Status != 0 {
+		return activityResponse{}, fmt.Errorf("fetch daily activity: Withings status %d", decoded.Status)
+	}
+	return decoded, nil
+}
+
 type Measure struct {
 	Value int64 `json:"value"`
 	Type  int   `json:"type"`

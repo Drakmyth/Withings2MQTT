@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -342,6 +343,130 @@ func TestManualWeightSyncFailureDoesNotAdvanceCursor(t *testing.T) {
 	cursor, err := a.store.SyncCursor(context.Background(), "user-1", "weight")
 	if err != nil || cursor != 0 {
 		t.Fatalf("cursor advanced after failure: %d, %v", cursor, err)
+	}
+}
+
+func TestManualActivitySyncImportsOptionalMetricsAndSupportsFallbacks(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"activities":[{"date":"2026-07-15","timezone":"America/New_York","steps":8123,"distance":6123.5,"calories":428.2,"elevation":14.5},{"date":"2026-07-16","timezone":"America/New_York","steps":100}]}}`))
+	}))
+	defer server.Close()
+	a.withings = withings.Client{BaseURL: server.URL, HTTPClient: server.Client()}
+
+	r := httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/activity", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "2+daily+activity+summaries") {
+		t.Fatalf("fallback response: %d, %q", w.Code, w.Header().Get("Location"))
+	}
+	activities, err := a.store.DailyActivities(context.Background(), "user-1")
+	if err != nil || len(activities) != 2 || activities[0].Steps != 8123 || activities[0].Distance == nil || activities[1].Distance != nil {
+		t.Fatalf("activities = %+v, %v", activities, err)
+	}
+	if activities[0].ObservedAt.Location().String() != "UTC" || activities[0].ObservedAt.Hour() != 4 {
+		t.Fatalf("observed time = %v", activities[0].ObservedAt)
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/activity", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("HX-Request", "true")
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Imported or updated 0 daily activity summaries") || requests != 2 {
+		t.Fatalf("HTMX response: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestManualActivitySyncFailureDoesNotAdvanceCursor(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	a.withings = withings.Client{BaseURL: server.URL, HTTPClient: server.Client()}
+	r := httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/activity", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Activity sync failed") {
+		t.Fatalf("failure response: %d %s", w.Code, w.Body.String())
+	}
+	if cursor, err := a.store.SyncCursor(context.Background(), "user-1", "activity"); err != nil || cursor != 0 {
+		t.Fatalf("cursor advanced after failure: %d, %v", cursor, err)
+	}
+}
+
+func TestConcurrentActivitySyncsSerializeCursorReads(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var requestsMu sync.Mutex
+	var startDates []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		requestsMu.Lock()
+		startDates = append(startDates, r.Form.Get("startdateymd"))
+		requestNumber := len(startDates)
+		requestsMu.Unlock()
+		if requestNumber == 1 {
+			close(firstRequest)
+			<-releaseFirst
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"activities":[]}}`))
+	}))
+	defer server.Close()
+	a.withings = withings.Client{BaseURL: server.URL, HTTPClient: server.Client()}
+
+	errors := make(chan error, 2)
+	go func() {
+		_, err := a.SyncActivity(context.Background(), "user-1")
+		errors <- err
+	}()
+	<-firstRequest
+	go func() {
+		_, err := a.SyncActivity(context.Background(), "user-1")
+		errors <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	requestsMu.Lock()
+	requestsBeforeRelease := len(startDates)
+	requestsMu.Unlock()
+	if requestsBeforeRelease != 1 {
+		t.Fatalf("concurrent request reached Withings before the first import completed: %d requests", requestsBeforeRelease)
+	}
+	close(releaseFirst)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if len(startDates) != 2 {
+		t.Fatalf("start dates = %v", startDates)
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	if startDates[0] == today || startDates[1] != today {
+		t.Fatalf("start dates = %v; second sync should read the cursor written by the first", startDates)
 	}
 }
 

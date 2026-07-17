@@ -110,6 +110,164 @@ type MeasurementPage struct {
 	TotalPages int
 }
 
+type DailyActivity struct {
+	WithingsUserID string
+	Date           string
+	Steps          int
+	StepsUnit      string
+	Distance       *float64
+	DistanceUnit   string
+	Calories       *float64
+	CaloriesUnit   string
+	Elevation      *float64
+	ElevationUnit  string
+	ObservedAt     time.Time
+}
+
+func (s *Store) SaveDailyActivity(ctx context.Context, activity DailyActivity) error {
+	if err := validateDailyActivity(activity); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := saveDailyActivity(ctx, s.db, activity, now)
+	return err
+}
+
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func saveDailyActivity(ctx context.Context, executor sqlExecutor, activity DailyActivity, now string) (sql.Result, error) {
+	result, err := executor.ExecContext(ctx, `INSERT INTO daily_activity
+		(withings_user_id, activity_date, steps, steps_unit, distance, distance_unit, calories, calories_unit, elevation, elevation_unit, observed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(withings_user_id, activity_date) DO UPDATE SET
+			steps=excluded.steps, steps_unit=excluded.steps_unit,
+			distance=excluded.distance, distance_unit=excluded.distance_unit,
+			calories=excluded.calories, calories_unit=excluded.calories_unit,
+			elevation=excluded.elevation, elevation_unit=excluded.elevation_unit,
+			observed_at=excluded.observed_at, updated_at=excluded.updated_at
+		WHERE daily_activity.steps != excluded.steps
+			OR daily_activity.steps_unit != excluded.steps_unit
+			OR daily_activity.distance IS NOT excluded.distance
+			OR daily_activity.distance_unit IS NOT excluded.distance_unit
+			OR daily_activity.calories IS NOT excluded.calories
+			OR daily_activity.calories_unit IS NOT excluded.calories_unit
+			OR daily_activity.elevation IS NOT excluded.elevation
+			OR daily_activity.elevation_unit IS NOT excluded.elevation_unit
+			OR daily_activity.observed_at != excluded.observed_at`,
+		activity.WithingsUserID, activity.Date, activity.Steps, activity.StepsUnit,
+		activity.Distance, nullableUnit(activity.Distance, activity.DistanceUnit),
+		activity.Calories, nullableUnit(activity.Calories, activity.CaloriesUnit),
+		activity.Elevation, nullableUnit(activity.Elevation, activity.ElevationUnit),
+		activity.ObservedAt.UTC().Format(time.RFC3339Nano), now, now)
+	if err != nil {
+		return nil, fmt.Errorf("save daily activity: %w", err)
+	}
+	return result, nil
+}
+
+func validateDailyActivity(activity DailyActivity) error {
+	if activity.WithingsUserID == "" || activity.Date == "" || activity.StepsUnit == "" || activity.ObservedAt.IsZero() {
+		return fmt.Errorf("daily activity user ID, date, steps unit, and observed time are required")
+	}
+	if activity.Steps < 0 {
+		return fmt.Errorf("daily activity steps cannot be negative")
+	}
+	for _, metric := range []struct {
+		value *float64
+		unit  string
+	}{{activity.Distance, activity.DistanceUnit}, {activity.Calories, activity.CaloriesUnit}, {activity.Elevation, activity.ElevationUnit}} {
+		if metric.value != nil && metric.unit == "" {
+			return fmt.Errorf("daily activity optional metric unit is required when value is supplied")
+		}
+	}
+	return nil
+}
+
+func nullableUnit(value *float64, unit string) any {
+	if value == nil {
+		return nil
+	}
+	return unit
+}
+
+func (s *Store) ImportDailyActivities(ctx context.Context, userID string, activities []DailyActivity, lastUpdate int64) (int, error) {
+	for i := range activities {
+		activities[i].WithingsUserID = userID
+		if err := validateDailyActivity(activities[i]); err != nil {
+			return 0, err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin daily activity import: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	changed := 0
+	for _, activity := range activities {
+		result, err := saveDailyActivity(ctx, tx, activity, now)
+		if err != nil {
+			return 0, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("count imported daily activity: %w", err)
+		}
+		changed += int(rows)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sync_cursors(withings_user_id, category, last_update, updated_at)
+		VALUES (?, 'activity', ?, ?)
+		ON CONFLICT(withings_user_id, category) DO UPDATE SET last_update=MAX(sync_cursors.last_update, excluded.last_update), updated_at=excluded.updated_at`, userID, lastUpdate, now); err != nil {
+		return 0, fmt.Errorf("update activity cursor: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit daily activity import: %w", err)
+	}
+	return changed, nil
+}
+
+func (s *Store) DailyActivities(ctx context.Context, userID string) ([]DailyActivity, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT withings_user_id, activity_date, steps, steps_unit,
+		distance, distance_unit, calories, calories_unit, elevation, elevation_unit, observed_at
+		FROM daily_activity WHERE withings_user_id = ? ORDER BY observed_at, id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query daily activity: %w", err)
+	}
+	defer rows.Close()
+	var activities []DailyActivity
+	for rows.Next() {
+		var activity DailyActivity
+		var observedAt string
+		var distance, calories, elevation sql.NullFloat64
+		var distanceUnit, caloriesUnit, elevationUnit sql.NullString
+		if err := rows.Scan(&activity.WithingsUserID, &activity.Date, &activity.Steps, &activity.StepsUnit,
+			&distance, &distanceUnit, &calories, &caloriesUnit, &elevation, &elevationUnit, &observedAt); err != nil {
+			return nil, fmt.Errorf("scan daily activity: %w", err)
+		}
+		activity.Distance, activity.DistanceUnit = optionalMetric(distance, distanceUnit)
+		activity.Calories, activity.CaloriesUnit = optionalMetric(calories, caloriesUnit)
+		activity.Elevation, activity.ElevationUnit = optionalMetric(elevation, elevationUnit)
+		activity.ObservedAt, err = time.Parse(time.RFC3339Nano, observedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse daily activity time: %w", err)
+		}
+		activities = append(activities, activity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query daily activity: %w", err)
+	}
+	return activities, nil
+}
+
+func optionalMetric(value sql.NullFloat64, unit sql.NullString) (*float64, string) {
+	if !value.Valid {
+		return nil, ""
+	}
+	return &value.Float64, unit.String
+}
+
 type SyncCursorStatus struct {
 	LastUpdate int64
 	UpdatedAt  time.Time

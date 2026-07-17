@@ -1,10 +1,128 @@
-{{define "scale"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scale data · Withings2MQTT</title><link rel="stylesheet" href="/static/admin.css"><script src="/static/htmx-2.0.4.min.js"></script></head>
-<body><main><nav aria-label="Breadcrumb"><a href="/admin">Admin</a> / Scale data</nav><h1>Scale data</h1><p>Withings user {{.UserID}}</p>
-<section aria-labelledby="latest-heading"><h2 id="latest-heading">Latest measurements</h2>{{if .Latest}}<div class="metric-grid">{{range .Latest}}<article class="metric"><h3>{{formatMetric .Metric}}</h3><p><strong>{{formatValue .Value}}</strong> {{.Unit}}</p><p><time datetime="{{.ObservedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatTime .ObservedAt}}</time></p></article>{{end}}</div>{{else}}<p>No scale measurements have been imported.</p>{{end}}{{if not .SyncStatus.UpdatedAt.IsZero}}<p>Last successful sync: <time datetime="{{.SyncStatus.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatTime .SyncStatus.UpdatedAt}}</time></p>{{end}}</section>
-<section aria-labelledby="history-heading"><h2 id="history-heading">History</h2>{{template "scale-history" .}}</section></main></body></html>{{end}}
+{{define "scale"}}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Scale data · Withings2MQTT</title>
+    <link rel="stylesheet" href="/static/admin.css">
+    <script src="/static/htmx-2.0.4.min.js"></script>
+  </head>
+  <body>
+    <main>
+      <nav aria-label="Breadcrumb">
+        <a href="/admin">Admin</a> / Scale data
+      </nav>
+      <h1>Scale data</h1>
+      <p>Withings user {{.UserID}}</p>
+      <section aria-labelledby="latest-heading">
+        <h2 id="latest-heading">Latest measurements</h2>
+        {{if .Latest}}
+          <div class="metric-grid">
+            {{range .Latest}}
+              <article class="metric">
+                <h3>{{formatMetric .Metric}}</h3>
+                <p><strong>{{formatValue .Value}}</strong> {{.Unit}}</p>
+                <p>
+                  <time datetime="{{.ObservedAt.Format "2006-01-02T15:04:05Z07:00"}}">
+                    {{formatTime .ObservedAt}}
+                  </time>
+                </p>
+              </article>
+            {{end}}
+          </div>
+        {{else}}
+          <p>No scale measurements have been imported.</p>
+        {{end}}
+        {{if not .SyncStatus.UpdatedAt.IsZero}}
+          <p>
+            Last successful sync:
+            <time datetime="{{.SyncStatus.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}">
+              {{formatTime .SyncStatus.UpdatedAt}}
+            </time>
+          </p>
+        {{end}}
+      </section>
+      <section aria-labelledby="history-heading">
+        <h2 id="history-heading">History</h2>
+        {{template "scale-history" .}}
+      </section>
+    </main>
+  </body>
+</html>
+{{end}}
 
-{{define "scale-history"}}<div id="scale-history">
-<form class="filters" method="get" action="/admin/withings/{{.UserID}}/scale/history" hx-get="/admin/withings/{{.UserID}}/scale/history" hx-target="#scale-history" hx-swap="outerHTML" hx-push-url="true"><label for="metric">Metric</label><select id="metric" name="metric"><option value="">All metrics</option>{{range .MetricOptions}}<option value="{{.}}"{{if eq . $.Metric}} selected{{end}}>{{formatMetric .}}</option>{{end}}</select><button type="submit">Filter</button></form>
-<p>{{.History.TotalItems}} measurements</p>{{if .History.Items}}<div class="table-scroll"><table><thead><tr><th scope="col">Observed</th><th scope="col">Metric</th><th scope="col">Value</th></tr></thead><tbody>{{range .History.Items}}<tr><td><time datetime="{{.ObservedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{formatTime .ObservedAt}}</time></td><td>{{formatMetric .Metric}}</td><td>{{formatValue .Value}} {{.Unit}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No measurements match this filter.</p>{{end}}
-{{if gt .History.TotalPages 1}}<nav class="pagination" aria-label="Scale history pages">{{if gt .History.Page 1}}<a href="{{pageURL .UserID .Metric (sub .History.Page)}}" hx-get="{{pageURL .UserID .Metric (sub .History.Page)}}" hx-target="#scale-history" hx-swap="outerHTML" hx-push-url="true">Previous</a>{{end}}<span>Page {{.History.Page}} of {{.History.TotalPages}}</span>{{if lt .History.Page .History.TotalPages}}<a href="{{pageURL .UserID .Metric (add .History.Page)}}" hx-get="{{pageURL .UserID .Metric (add .History.Page)}}" hx-target="#scale-history" hx-swap="outerHTML" hx-push-url="true">Next</a>{{end}}</nav>{{end}}</div>{{end}}
+{{define "scale-history"}}
+<div id="scale-history">
+  <form
+    class="filters"
+    method="get"
+    action="/admin/withings/{{.UserID}}/scale/history"
+    hx-get="/admin/withings/{{.UserID}}/scale/history"
+    hx-target="#scale-history"
+    hx-swap="outerHTML"
+    hx-push-url="true"
+  >
+    <label for="metric">Metric</label>
+    <select id="metric" name="metric">
+      <option value="">All metrics</option>
+      {{range .MetricOptions}}
+        <option value="{{.}}"{{if eq . $.Metric}} selected{{end}}>{{formatMetric .}}</option>
+      {{end}}
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+  <p>{{.History.TotalItems}} measurements</p>
+  {{if .History.Items}}
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Observed</th>
+            <th scope="col">Metric</th>
+            <th scope="col">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .History.Items}}
+            <tr>
+              <td>
+                <time datetime="{{.ObservedAt.Format "2006-01-02T15:04:05Z07:00"}}">
+                  {{formatTime .ObservedAt}}
+                </time>
+              </td>
+              <td>{{formatMetric .Metric}}</td>
+              <td>{{formatValue .Value}} {{.Unit}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{else}}
+    <p>No measurements match this filter.</p>
+  {{end}}
+  {{if gt .History.TotalPages 1}}
+    <nav class="pagination" aria-label="Scale history pages">
+      {{if gt .History.Page 1}}
+        <a
+          href="{{pageURL .UserID .Metric (sub .History.Page)}}"
+          hx-get="{{pageURL .UserID .Metric (sub .History.Page)}}"
+          hx-target="#scale-history"
+          hx-swap="outerHTML"
+          hx-push-url="true"
+        >Previous</a>
+      {{end}}
+      <span>Page {{.History.Page}} of {{.History.TotalPages}}</span>
+      {{if lt .History.Page .History.TotalPages}}
+        <a
+          href="{{pageURL .UserID .Metric (add .History.Page)}}"
+          hx-get="{{pageURL .UserID .Metric (add .History.Page)}}"
+          hx-target="#scale-history"
+          hx-swap="outerHTML"
+          hx-push-url="true"
+        >Next</a>
+      {{end}}
+    </nav>
+  {{end}}
+</div>
+{{end}}
