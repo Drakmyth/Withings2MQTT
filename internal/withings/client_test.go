@@ -53,6 +53,35 @@ func TestFetchMeasurementsRejectsWithingsError(t *testing.T) {
 	}
 }
 
+func TestFetchMeasurementsFollowsPagination(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if requests == 1 {
+			if r.Form.Get("offset") != "" {
+				t.Errorf("first offset = %q", r.Form.Get("offset"))
+			}
+			_, _ = w.Write([]byte(`{"status":0,"body":{"updatetime":300,"more":1,"offset":1000,"measuregrps":[{"grpid":1,"date":100,"category":1,"measures":[{"value":80,"type":1,"unit":0}]}]}}`))
+			return
+		}
+		if r.Form.Get("offset") != "1000" {
+			t.Errorf("second offset = %q", r.Form.Get("offset"))
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"updatetime":300,"more":0,"offset":1000,"measuregrps":[{"grpid":2,"date":200,"category":1,"measures":[{"value":81,"type":1,"unit":0}]}]}}`))
+	}))
+	defer server.Close()
+	result, err := (Client{BaseURL: server.URL}).FetchMeasurements(context.Background(), "token", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(result.Groups) != 2 || result.Groups[1].ID != 2 {
+		t.Fatalf("result = %+v after %d requests", result, requests)
+	}
+}
+
 func TestNormalizeMeasurementsHandlesOptionalComposition(t *testing.T) {
 	groups := []MeasureGroup{{
 		ID: 42, Date: 1700000000, Category: 1,

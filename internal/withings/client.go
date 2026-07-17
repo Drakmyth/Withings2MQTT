@@ -109,18 +109,45 @@ type measureResponse struct {
 	Body   struct {
 		UpdateTime int64          `json:"updatetime"`
 		Groups     []MeasureGroup `json:"measuregrps"`
+		More       int            `json:"more"`
+		Offset     int            `json:"offset"`
 	} `json:"body"`
 }
 
 func (c Client) FetchMeasurements(ctx context.Context, accessToken string, lastUpdate int64) (Measurements, error) {
+	result := Measurements{}
+	offset := 0
+	for {
+		page, err := c.fetchMeasurementPage(ctx, accessToken, lastUpdate, offset)
+		if err != nil {
+			return Measurements{}, err
+		}
+		result.Groups = append(result.Groups, page.Body.Groups...)
+		if page.Body.UpdateTime > result.UpdateTime {
+			result.UpdateTime = page.Body.UpdateTime
+		}
+		if page.Body.More == 0 {
+			return result, nil
+		}
+		if page.Body.Offset <= offset {
+			return Measurements{}, fmt.Errorf("fetch measurements: pagination offset did not advance")
+		}
+		offset = page.Body.Offset
+	}
+}
+
+func (c Client) fetchMeasurementPage(ctx context.Context, accessToken string, lastUpdate int64, offset int) (measureResponse, error) {
 	baseURL := strings.TrimRight(c.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 	values := url.Values{"action": {"getmeas"}, "lastupdate": {strconv.FormatInt(lastUpdate, 10)}}
+	if offset > 0 {
+		values.Set("offset", strconv.Itoa(offset))
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/measure", strings.NewReader(values.Encode()))
 	if err != nil {
-		return Measurements{}, fmt.Errorf("create measurement request: %w", err)
+		return measureResponse{}, fmt.Errorf("create measurement request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -130,18 +157,18 @@ func (c Client) FetchMeasurements(ctx context.Context, accessToken string, lastU
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return Measurements{}, fmt.Errorf("fetch measurements: %w", err)
+		return measureResponse{}, fmt.Errorf("fetch measurements: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Measurements{}, fmt.Errorf("fetch measurements: unexpected HTTP status %d", resp.StatusCode)
+		return measureResponse{}, fmt.Errorf("fetch measurements: unexpected HTTP status %d", resp.StatusCode)
 	}
 	var decoded measureResponse
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return Measurements{}, fmt.Errorf("decode measurements: %w", err)
+		return measureResponse{}, fmt.Errorf("decode measurements: %w", err)
 	}
 	if decoded.Status != 0 {
-		return Measurements{}, fmt.Errorf("fetch measurements: Withings status %d", decoded.Status)
+		return measureResponse{}, fmt.Errorf("fetch measurements: Withings status %d", decoded.Status)
 	}
-	return Measurements{UpdateTime: decoded.Body.UpdateTime, Groups: decoded.Body.Groups}, nil
+	return decoded, nil
 }

@@ -30,7 +30,7 @@ The three Withings settings may be omitted while the service is unlinked, but al
 
 ## Scale data
 
-After linking an account, use **Sync weight** beside that account on the admin page. The service imports new and corrected scale groups since the last successful sync, deduplicates repeated results, and stores normalized weight and available body-composition measurements in SQLite. A failed fetch or import does not advance the account's weight cursor.
+After linking an account, use **Sync new data** beside that account on the admin page. The service follows all Withings result pages, imports new and corrected scale groups since the last successful sync, deduplicates repeated results, and stores normalized weight and available body-composition measurements in SQLite. A failed fetch or import does not advance the account's weight cursor. Use **Resync all scale data** to repair an incomplete historical import without deleting existing samples.
 
 Supported normalized metrics are weight, fat-free mass, fat ratio, fat mass, muscle mass, hydration, and bone mass. Body-composition fields are optional; weight-only measurements import normally.
 

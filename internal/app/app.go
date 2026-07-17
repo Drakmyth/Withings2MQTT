@@ -151,6 +151,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /oauth/withings/callback", noStore(a.withingsCallback))
 	mux.HandleFunc("POST /admin/withings/{id}/unlink", noStore(a.unlinkWithings))
 	mux.HandleFunc("POST /admin/withings/{id}/sync/weight", noStore(a.manualWeightSync))
+	mux.HandleFunc("POST /admin/withings/{id}/sync/weight/all", noStore(a.manualFullWeightSync))
 	mux.HandleFunc("GET /admin/withings/{id}/scale", noStore(a.scalePage))
 	mux.HandleFunc("GET /admin/withings/{id}/scale/history", noStore(a.scaleHistory))
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
@@ -311,6 +312,14 @@ func (a *App) SyncWeight(ctx context.Context, userID string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("load weight cursor: %w", err)
 	}
+	return a.syncWeightFrom(ctx, userID, cursor)
+}
+
+func (a *App) SyncAllScaleData(ctx context.Context, userID string) (int, error) {
+	return a.syncWeightFrom(ctx, userID, 0)
+}
+
+func (a *App) syncWeightFrom(ctx context.Context, userID string, cursor int64) (int, error) {
 	token, err := a.AccessToken(ctx, userID)
 	if err != nil {
 		return 0, err
@@ -328,9 +337,23 @@ func (a *App) SyncWeight(ctx context.Context, userID string) (int, error) {
 }
 
 func (a *App) manualWeightSync(w http.ResponseWriter, r *http.Request) {
+	a.manualScaleSync(w, r, false)
+}
+
+func (a *App) manualFullWeightSync(w http.ResponseWriter, r *http.Request) {
+	a.manualScaleSync(w, r, true)
+}
+
+func (a *App) manualScaleSync(w http.ResponseWriter, r *http.Request, full bool) {
 	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
-		count, err := a.SyncWeight(r.Context(), r.PathValue("id"))
-		result := syncResult{Message: fmt.Sprintf("Imported %d new scale measurements.", count)}
+		var count int
+		var err error
+		if full {
+			count, err = a.SyncAllScaleData(r.Context(), r.PathValue("id"))
+		} else {
+			count, err = a.SyncWeight(r.Context(), r.PathValue("id"))
+		}
+		result := syncResult{Message: fmt.Sprintf("Imported or updated %d scale measurements.", count)}
 		if err != nil {
 			result = syncResult{Message: "Weight sync failed.", Failed: true}
 		}

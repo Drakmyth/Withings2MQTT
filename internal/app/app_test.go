@@ -273,10 +273,15 @@ func TestManualWeightSyncImportsAndSupportsFallbacks(t *testing.T) {
 	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	var lastUpdates []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
 			t.Errorf("Authorization = %q", got)
 		}
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		lastUpdates = append(lastUpdates, r.Form.Get("lastupdate"))
 		_, _ = w.Write([]byte(`{"status":0,"body":{"updatetime":1700000100,"measuregrps":[{"grpid":42,"date":1700000050,"modified":1700000060,"category":1,"measures":[{"value":80425,"type":1,"unit":-3},{"value":205,"type":6,"unit":-1}]}]}}`))
 	}))
 	defer server.Close()
@@ -286,7 +291,7 @@ func TestManualWeightSyncImportsAndSupportsFallbacks(t *testing.T) {
 	r.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "Imported+2+new+scale+measurements") {
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "Imported+or+updated+2+scale+measurements") {
 		t.Fatalf("fallback response: %d, %q", w.Code, w.Header().Get("Location"))
 	}
 	measurements, err := a.store.Measurements(context.Background(), "user-1")
@@ -299,12 +304,20 @@ func TestManualWeightSyncImportsAndSupportsFallbacks(t *testing.T) {
 	r.Header.Set("HX-Request", "true")
 	w = httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Imported 0 new scale measurements") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Imported or updated 0 scale measurements") {
 		t.Fatalf("HTMX response: %d %s", w.Code, w.Body.String())
 	}
 	cursor, err := a.store.SyncCursor(context.Background(), "user-1", "weight")
 	if err != nil || cursor != 1700000100 {
 		t.Fatalf("cursor = %d, %v", cursor, err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/weight/all", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("HX-Request", "true")
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || len(lastUpdates) != 3 || lastUpdates[0] != "0" || lastUpdates[1] != "1700000100" || lastUpdates[2] != "0" {
+		t.Fatalf("full resync did not restart history: response=%d lastupdate=%v", w.Code, lastUpdates)
 	}
 }
 
