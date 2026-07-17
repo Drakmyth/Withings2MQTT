@@ -110,6 +110,63 @@ type MeasurementPage struct {
 	TotalPages int
 }
 
+type DailyActivity struct {
+	WithingsUserID string
+	Date           string
+	Steps          int
+	StepsUnit      string
+	ObservedAt     time.Time
+}
+
+func (s *Store) SaveDailyActivity(ctx context.Context, activity DailyActivity) error {
+	if activity.WithingsUserID == "" || activity.Date == "" || activity.StepsUnit == "" || activity.ObservedAt.IsZero() {
+		return fmt.Errorf("daily activity user ID, date, steps unit, and observed time are required")
+	}
+	if activity.Steps < 0 {
+		return fmt.Errorf("daily activity steps cannot be negative")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO daily_activity
+		(withings_user_id, activity_date, steps, steps_unit, observed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(withings_user_id, activity_date) DO UPDATE SET
+			steps=excluded.steps, steps_unit=excluded.steps_unit, observed_at=excluded.observed_at, updated_at=excluded.updated_at
+		WHERE daily_activity.steps != excluded.steps
+			OR daily_activity.steps_unit != excluded.steps_unit
+			OR daily_activity.observed_at != excluded.observed_at`,
+		activity.WithingsUserID, activity.Date, activity.Steps, activity.StepsUnit, activity.ObservedAt.UTC().Format(time.RFC3339Nano), now, now)
+	if err != nil {
+		return fmt.Errorf("save daily activity: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DailyActivities(ctx context.Context, userID string) ([]DailyActivity, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT withings_user_id, activity_date, steps, steps_unit, observed_at
+		FROM daily_activity WHERE withings_user_id = ? ORDER BY observed_at, id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query daily activity: %w", err)
+	}
+	defer rows.Close()
+	var activities []DailyActivity
+	for rows.Next() {
+		var activity DailyActivity
+		var observedAt string
+		if err := rows.Scan(&activity.WithingsUserID, &activity.Date, &activity.Steps, &activity.StepsUnit, &observedAt); err != nil {
+			return nil, fmt.Errorf("scan daily activity: %w", err)
+		}
+		activity.ObservedAt, err = time.Parse(time.RFC3339Nano, observedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse daily activity time: %w", err)
+		}
+		activities = append(activities, activity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query daily activity: %w", err)
+	}
+	return activities, nil
+}
+
 type SyncCursorStatus struct {
 	LastUpdate int64
 	UpdatedAt  time.Time

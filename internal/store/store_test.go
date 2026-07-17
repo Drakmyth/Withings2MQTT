@@ -140,3 +140,59 @@ func TestMeasurementHistoryIsFilteredPaginatedAndLatest(t *testing.T) {
 		t.Fatalf("sync status = %+v, %v", status, err)
 	}
 }
+
+func TestDailyStepsPersistWithTimestampAndUnits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "activity.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.SaveLinkedUser(ctx, LinkedUser{WithingsUserID: "user-1", AccessToken: []byte("a"), RefreshToken: []byte("r"), TokenExpiry: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	observedAt := time.Date(2026, 7, 15, 0, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
+	activity := DailyActivity{WithingsUserID: "user-1", Date: "2026-07-15", Steps: 8123, StepsUnit: "steps", ObservedAt: observedAt}
+	if err := s.SaveDailyActivity(ctx, activity); err != nil {
+		t.Fatal(err)
+	}
+	activity.Steps = 8124
+	if err := s.SaveDailyActivity(ctx, activity); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	activities, err := s.DailyActivities(ctx, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activities) != 1 || activities[0].Steps != 8124 || activities[0].StepsUnit != "steps" {
+		t.Fatalf("activities = %+v", activities)
+	}
+	if !activities[0].ObservedAt.Equal(observedAt) {
+		t.Fatalf("observed at = %v, want %v", activities[0].ObservedAt, observedAt)
+	}
+}
+
+func TestDailyStepsValidation(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "activity-validation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	invalid := []DailyActivity{
+		{},
+		{WithingsUserID: "user-1", Date: "2026-07-15", Steps: -1, StepsUnit: "steps", ObservedAt: time.Now()},
+	}
+	for _, activity := range invalid {
+		if err := s.SaveDailyActivity(context.Background(), activity); err == nil {
+			t.Fatalf("SaveDailyActivity(%+v) succeeded", activity)
+		}
+	}
+}
