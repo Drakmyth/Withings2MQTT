@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +19,10 @@ import (
 	"github.com/Drakmyth/withings2mqtt/internal/config"
 	crypt "github.com/Drakmyth/withings2mqtt/internal/crypto"
 	"github.com/Drakmyth/withings2mqtt/internal/store"
+	"github.com/Drakmyth/withings2mqtt/internal/withings"
 )
 
-//go:embed templates/admin.html static/htmx-2.0.4.min.js
+//go:embed templates/*.html static/*
 var assets embed.FS
 
 const withingsAuthorizeURL = "https://account.withings.com/oauth2_user/authorize2"
@@ -35,10 +37,28 @@ type App struct {
 	templates  *template.Template
 	httpClient *http.Client
 	tokenURL   string
+	withings   withings.Client
 	statesMu   sync.Mutex
 	states     map[string]oauthState
 }
-type adminData struct{ LinkedUsers []store.LinkedUser }
+type adminData struct {
+	LinkedUsers []store.LinkedUser
+	SyncMessage string
+}
+
+type syncResult struct {
+	Message string
+	Failed  bool
+}
+
+type scalePageData struct {
+	UserID        string
+	Latest        []store.Measurement
+	SyncStatus    store.SyncCursorStatus
+	History       store.MeasurementPage
+	Metric        string
+	MetricOptions []string
+}
 
 func New(cfg config.Config) (*App, error) {
 	s, err := store.Open(cfg.DBPath)
@@ -50,12 +70,19 @@ func New(cfg config.Config) (*App, error) {
 		s.Close()
 		return nil, err
 	}
-	templates, err := template.ParseFS(assets, "templates/admin.html")
+	templates, err := template.New("").Funcs(template.FuncMap{
+		"formatMetric": formatMetric,
+		"formatTime":   func(value time.Time) string { return value.UTC().Format("2006-01-02 15:04 UTC") },
+		"formatValue":  func(value float64) string { return strconv.FormatFloat(value, 'f', -1, 64) },
+		"pageURL":      scalePageURL,
+		"sub":          func(value int) int { return value - 1 },
+		"add":          func(value int) int { return value + 1 },
+	}).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		s.Close()
 		return nil, err
 	}
-	return &App{cfg: cfg, store: s, cipher: cipher, templates: templates, httpClient: http.DefaultClient, tokenURL: withingsTokenURL, states: make(map[string]oauthState)}, nil
+	return &App{cfg: cfg, store: s, cipher: cipher, templates: templates, httpClient: http.DefaultClient, tokenURL: withingsTokenURL, withings: withings.Client{BaseURL: withings.DefaultBaseURL, HTTPClient: http.DefaultClient}, states: make(map[string]oauthState)}, nil
 }
 func (a *App) Close() error { return a.store.Close() }
 
@@ -123,8 +150,28 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/withings/link", noStore(a.startWithingsLink))
 	mux.HandleFunc("GET /oauth/withings/callback", noStore(a.withingsCallback))
 	mux.HandleFunc("POST /admin/withings/{id}/unlink", noStore(a.unlinkWithings))
+	mux.HandleFunc("POST /admin/withings/{id}/sync/weight", noStore(a.manualWeightSync))
+	mux.HandleFunc("POST /admin/withings/{id}/sync/weight/all", noStore(a.manualFullWeightSync))
+	mux.HandleFunc("GET /admin/withings/{id}/scale", noStore(a.scalePage))
+	mux.HandleFunc("GET /admin/withings/{id}/scale/history", noStore(a.scaleHistory))
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
+}
+
+func formatMetric(metric string) string {
+	labels := map[string]string{"weight": "Weight", "fat_free_mass": "Fat-free mass", "fat_ratio": "Fat ratio", "fat_mass": "Fat mass", "muscle_mass": "Muscle mass", "hydration": "Hydration", "bone_mass": "Bone mass"}
+	if label := labels[metric]; label != "" {
+		return label
+	}
+	return metric
+}
+
+func scalePageURL(userID, metric string, page int) string {
+	values := url.Values{"page": {strconv.Itoa(page)}}
+	if metric != "" {
+		values.Set("metric", metric)
+	}
+	return "/admin/withings/" + url.PathEscape(userID) + "/scale/history?" + values.Encode()
 }
 
 func noStore(next http.HandlerFunc) http.HandlerFunc {
@@ -260,6 +307,124 @@ func (a *App) data(ctx context.Context) (adminData, error) {
 	return adminData{LinkedUsers: users}, err
 }
 
+func (a *App) SyncWeight(ctx context.Context, userID string) (int, error) {
+	cursor, err := a.store.SyncCursor(ctx, userID, "weight")
+	if err != nil {
+		return 0, fmt.Errorf("load weight cursor: %w", err)
+	}
+	return a.syncWeightFrom(ctx, userID, cursor)
+}
+
+func (a *App) SyncAllScaleData(ctx context.Context, userID string) (int, error) {
+	return a.syncWeightFrom(ctx, userID, 0)
+}
+
+func (a *App) syncWeightFrom(ctx context.Context, userID string, cursor int64) (int, error) {
+	token, err := a.AccessToken(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	result, err := a.withings.FetchMeasurements(ctx, token, cursor)
+	if err != nil {
+		return 0, err
+	}
+	normalized := withings.NormalizeMeasurements(result.Groups)
+	measurements := make([]store.Measurement, 0, len(normalized))
+	for _, measurement := range normalized {
+		measurements = append(measurements, store.Measurement{WithingsUserID: userID, SourceGroupID: measurement.SourceGroupID, Metric: measurement.Metric, Value: measurement.Value, Unit: measurement.Unit, ObservedAt: measurement.ObservedAt})
+	}
+	return a.store.ImportMeasurements(ctx, userID, "weight", measurements, result.UpdateTime)
+}
+
+func (a *App) manualWeightSync(w http.ResponseWriter, r *http.Request) {
+	a.manualScaleSync(w, r, false)
+}
+
+func (a *App) manualFullWeightSync(w http.ResponseWriter, r *http.Request) {
+	a.manualScaleSync(w, r, true)
+}
+
+func (a *App) manualScaleSync(w http.ResponseWriter, r *http.Request, full bool) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var count int
+		var err error
+		if full {
+			count, err = a.SyncAllScaleData(r.Context(), r.PathValue("id"))
+		} else {
+			count, err = a.SyncWeight(r.Context(), r.PathValue("id"))
+		}
+		result := syncResult{Message: fmt.Sprintf("Imported or updated %d scale measurements.", count)}
+		if err != nil {
+			result = syncResult{Message: "Weight sync failed.", Failed: true}
+		}
+		if strings.EqualFold(r.Header.Get("HX-Request"), "true") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = a.templates.ExecuteTemplate(w, "sync-result", result)
+			return
+		}
+		values := url.Values{"sync": {result.Message}}
+		if result.Failed {
+			values.Set("sync_failed", "true")
+		}
+		http.Redirect(w, r, "/admin?"+values.Encode(), http.StatusSeeOther)
+	})(w, r)
+}
+
+var scaleMetrics = []string{"weight", "fat_free_mass", "fat_ratio", "fat_mass", "muscle_mass", "hydration", "bone_mass"}
+
+func (a *App) scalePage(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) { a.renderScale(w, r, false) })(w, r)
+}
+
+func (a *App) scaleHistory(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		a.renderScale(w, r, strings.EqualFold(r.Header.Get("HX-Request"), "true"))
+	})(w, r)
+}
+
+func (a *App) renderScale(w http.ResponseWriter, r *http.Request, fragment bool) {
+	userID := r.PathValue("id")
+	if _, err := a.store.LinkedUser(r.Context(), userID); err != nil {
+		http.Error(w, "linked account not found", http.StatusNotFound)
+		return
+	}
+	metric := r.URL.Query().Get("metric")
+	if metric != "" {
+		valid := false
+		for _, option := range scaleMetrics {
+			valid = valid || metric == option
+		}
+		if !valid {
+			http.Error(w, "invalid scale metric", http.StatusBadRequest)
+			return
+		}
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	latest, err := a.store.LatestMeasurements(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	history, err := a.store.MeasurementHistory(r.Context(), userID, metric, page, 50)
+	if err != nil {
+		http.Error(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	status, err := a.store.SyncStatus(r.Context(), userID, "weight")
+	if err != nil {
+		http.Error(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := scalePageData{UserID: userID, Latest: latest, SyncStatus: status, History: history, Metric: metric, MetricOptions: scaleMetrics}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Add("Vary", "HX-Request")
+	if fragment {
+		_ = a.templates.ExecuteTemplate(w, "scale-history", data)
+		return
+	}
+	_ = a.templates.ExecuteTemplate(w, "scale", data)
+}
+
 func (a *App) unlinkWithings(w http.ResponseWriter, r *http.Request) {
 	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if err := a.store.DeleteLinkedUser(r.Context(), r.PathValue("id")); err != nil {
@@ -275,6 +440,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database unavailable", 500)
 		return
 	}
+	data.SyncMessage = r.URL.Query().Get("sync")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = a.templates.ExecuteTemplate(w, "admin", data)
 }

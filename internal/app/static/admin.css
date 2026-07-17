@@ -1,0 +1,20 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { width: min(72rem, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+a { color: LinkText; }
+button, select { font: inherit; padding: .55rem .8rem; }
+button { cursor: pointer; border: 1px solid #1769aa; border-radius: .35rem; background: #1769aa; color: white; }
+button.secondary { background: transparent; color: CanvasText; border-color: GrayText; }
+.account-grid, .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; }
+.card, .metric { border: 1px solid GrayText; border-radius: .5rem; padding: 1rem; }
+.metric h3, .metric p { margin: .25rem 0; }
+.metric strong { font-size: 1.6rem; }
+.actions, .filters, .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.notice { border-left: .3rem solid #1769aa; padding: .5rem .75rem; }
+.system-status { color: GrayText; }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .65rem; border-bottom: 1px solid GrayText; text-align: left; }
+.pagination { justify-content: space-between; margin-top: 1rem; }
+@media (max-width: 35rem) { main { width: min(100% - 1rem, 72rem); padding-top: 1rem; } th, td { padding: .45rem; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
