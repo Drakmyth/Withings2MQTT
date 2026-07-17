@@ -52,6 +52,58 @@ type Measurements struct {
 	Groups     []MeasureGroup
 }
 
+type NormalizedMeasurement struct {
+	SourceGroupID int64
+	Metric        string
+	Value         float64
+	Unit          string
+	ObservedAt    time.Time
+}
+
+func NormalizeMeasurements(groups []MeasureGroup) []NormalizedMeasurement {
+	var normalized []NormalizedMeasurement
+	for _, group := range groups {
+		if group.Category != 1 {
+			continue
+		}
+		for _, measure := range group.Measures {
+			metric, unit, ok := normalizedMetric(measure.Type)
+			if !ok {
+				continue
+			}
+			normalized = append(normalized, NormalizedMeasurement{
+				SourceGroupID: group.ID,
+				Metric:        metric,
+				Value:         measure.RealValue(),
+				Unit:          unit,
+				ObservedAt:    group.ObservedAt(),
+			})
+		}
+	}
+	return normalized
+}
+
+func normalizedMetric(measureType int) (string, string, bool) {
+	switch measureType {
+	case MeasureWeight:
+		return "weight", "kg", true
+	case MeasureFatFree:
+		return "fat_free_mass", "kg", true
+	case MeasureFatRatio:
+		return "fat_ratio", "%", true
+	case MeasureFatMass:
+		return "fat_mass", "kg", true
+	case MeasureMuscleMass:
+		return "muscle_mass", "kg", true
+	case MeasureHydration:
+		return "hydration", "kg", true
+	case MeasureBoneMass:
+		return "bone_mass", "kg", true
+	default:
+		return "", "", false
+	}
+}
+
 type measureResponse struct {
 	Status int `json:"status"`
 	Body   struct {

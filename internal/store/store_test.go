@@ -63,6 +63,11 @@ func TestMeasurementsPersistDeduplicateAndAdvanceCursor(t *testing.T) {
 	if err != nil || inserted != 0 {
 		t.Fatalf("duplicate import = %d, %v", inserted, err)
 	}
+	sample.Value = 80.5
+	inserted, err = s.ImportMeasurements(ctx, "user-1", "weight", []Measurement{sample}, 300)
+	if err != nil || inserted != 1 {
+		t.Fatalf("corrected import = %d, %v", inserted, err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +77,11 @@ func TestMeasurementsPersistDeduplicateAndAdvanceCursor(t *testing.T) {
 	}
 	defer s.Close()
 	measurements, err := s.Measurements(ctx, "user-1")
-	if err != nil || len(measurements) != 1 || measurements[0].Metric != "weight" {
+	if err != nil || len(measurements) != 1 || measurements[0].Metric != "weight" || measurements[0].Value != 80.5 {
 		t.Fatalf("persisted measurements = %+v, %v", measurements, err)
 	}
 	cursor, err := s.SyncCursor(ctx, "user-1", "weight")
-	if err != nil || cursor != 200 {
+	if err != nil || cursor != 300 {
 		t.Fatalf("cursor = %d, %v", cursor, err)
 	}
 }

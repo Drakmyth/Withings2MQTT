@@ -119,9 +119,12 @@ func (s *Store) ImportMeasurements(ctx context.Context, userID, category string,
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	inserted := 0
 	for _, measurement := range measurements {
-		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO measurements
+		result, err := tx.ExecContext(ctx, `INSERT INTO measurements
 			(withings_user_id, source_group_id, metric, value, unit, observed_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, measurement.SourceGroupID, measurement.Metric, measurement.Value, measurement.Unit, measurement.ObservedAt.UTC().Format(time.RFC3339Nano), now)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(withings_user_id, source_group_id, metric) DO UPDATE SET
+				value=excluded.value, unit=excluded.unit, observed_at=excluded.observed_at
+			WHERE measurements.value != excluded.value OR measurements.unit != excluded.unit OR measurements.observed_at != excluded.observed_at`, userID, measurement.SourceGroupID, measurement.Metric, measurement.Value, measurement.Unit, measurement.ObservedAt.UTC().Format(time.RFC3339Nano), now)
 		if err != nil {
 			return 0, fmt.Errorf("insert measurement: %w", err)
 		}
@@ -133,7 +136,7 @@ func (s *Store) ImportMeasurements(ctx context.Context, userID, category string,
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sync_cursors(withings_user_id, category, last_update, updated_at)
 		VALUES (?, ?, ?, ?)
-		ON CONFLICT(withings_user_id, category) DO UPDATE SET last_update=excluded.last_update, updated_at=excluded.updated_at`, userID, category, lastUpdate, now); err != nil {
+		ON CONFLICT(withings_user_id, category) DO UPDATE SET last_update=MAX(sync_cursors.last_update, excluded.last_update), updated_at=excluded.updated_at`, userID, category, lastUpdate, now); err != nil {
 		return 0, fmt.Errorf("update sync cursor: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

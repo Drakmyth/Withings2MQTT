@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Drakmyth/withings2mqtt/internal/config"
+	"github.com/Drakmyth/withings2mqtt/internal/withings"
 )
 
 func newTestApp(t *testing.T) *App {
@@ -263,5 +264,69 @@ func TestAccessTokenRefreshesExpiredTokenAndPersistsReplacement(t *testing.T) {
 	}
 	if string(access) != "new-access" || string(refresh) != "new-refresh" {
 		t.Fatalf("persisted tokens = %q, %q", access, refresh)
+	}
+}
+
+func TestManualWeightSyncImportsAndSupportsFallbacks(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"status":0,"body":{"updatetime":1700000100,"measuregrps":[{"grpid":42,"date":1700000050,"modified":1700000060,"category":1,"measures":[{"value":80425,"type":1,"unit":-3},{"value":205,"type":6,"unit":-1}]}]}}`))
+	}))
+	defer server.Close()
+	a.withings = withings.Client{BaseURL: server.URL, HTTPClient: server.Client()}
+
+	r := httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/weight", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "Imported+2+new+scale+measurements") {
+		t.Fatalf("fallback response: %d, %q", w.Code, w.Header().Get("Location"))
+	}
+	measurements, err := a.store.Measurements(context.Background(), "user-1")
+	if err != nil || len(measurements) != 2 {
+		t.Fatalf("measurements = %+v, %v", measurements, err)
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/weight", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("HX-Request", "true")
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Imported 0 new scale measurements") {
+		t.Fatalf("HTMX response: %d %s", w.Code, w.Body.String())
+	}
+	cursor, err := a.store.SyncCursor(context.Background(), "user-1", "weight")
+	if err != nil || cursor != 1700000100 {
+		t.Fatalf("cursor = %d, %v", cursor, err)
+	}
+}
+
+func TestManualWeightSyncFailureDoesNotAdvanceCursor(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.SaveLinkedUser(context.Background(), "user-1", "access-token", "refresh-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	a.withings = withings.Client{BaseURL: server.URL, HTTPClient: server.Client()}
+	r := httptest.NewRequest(http.MethodPost, "/admin/withings/user-1/sync/weight", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Weight sync failed") {
+		t.Fatalf("failure response: %d %s", w.Code, w.Body.String())
+	}
+	cursor, err := a.store.SyncCursor(context.Background(), "user-1", "weight")
+	if err != nil || cursor != 0 {
+		t.Fatalf("cursor advanced after failure: %d, %v", cursor, err)
 	}
 }

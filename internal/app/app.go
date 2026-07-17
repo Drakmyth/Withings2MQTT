@@ -18,6 +18,7 @@ import (
 	"github.com/Drakmyth/withings2mqtt/internal/config"
 	crypt "github.com/Drakmyth/withings2mqtt/internal/crypto"
 	"github.com/Drakmyth/withings2mqtt/internal/store"
+	"github.com/Drakmyth/withings2mqtt/internal/withings"
 )
 
 //go:embed templates/admin.html static/htmx-2.0.4.min.js
@@ -35,10 +36,19 @@ type App struct {
 	templates  *template.Template
 	httpClient *http.Client
 	tokenURL   string
+	withings   withings.Client
 	statesMu   sync.Mutex
 	states     map[string]oauthState
 }
-type adminData struct{ LinkedUsers []store.LinkedUser }
+type adminData struct {
+	LinkedUsers []store.LinkedUser
+	SyncMessage string
+}
+
+type syncResult struct {
+	Message string
+	Failed  bool
+}
 
 func New(cfg config.Config) (*App, error) {
 	s, err := store.Open(cfg.DBPath)
@@ -55,7 +65,7 @@ func New(cfg config.Config) (*App, error) {
 		s.Close()
 		return nil, err
 	}
-	return &App{cfg: cfg, store: s, cipher: cipher, templates: templates, httpClient: http.DefaultClient, tokenURL: withingsTokenURL, states: make(map[string]oauthState)}, nil
+	return &App{cfg: cfg, store: s, cipher: cipher, templates: templates, httpClient: http.DefaultClient, tokenURL: withingsTokenURL, withings: withings.Client{BaseURL: withings.DefaultBaseURL, HTTPClient: http.DefaultClient}, states: make(map[string]oauthState)}, nil
 }
 func (a *App) Close() error { return a.store.Close() }
 
@@ -123,6 +133,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/withings/link", noStore(a.startWithingsLink))
 	mux.HandleFunc("GET /oauth/withings/callback", noStore(a.withingsCallback))
 	mux.HandleFunc("POST /admin/withings/{id}/unlink", noStore(a.unlinkWithings))
+	mux.HandleFunc("POST /admin/withings/{id}/sync/weight", noStore(a.manualWeightSync))
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
 }
@@ -260,6 +271,47 @@ func (a *App) data(ctx context.Context) (adminData, error) {
 	return adminData{LinkedUsers: users}, err
 }
 
+func (a *App) SyncWeight(ctx context.Context, userID string) (int, error) {
+	cursor, err := a.store.SyncCursor(ctx, userID, "weight")
+	if err != nil {
+		return 0, fmt.Errorf("load weight cursor: %w", err)
+	}
+	token, err := a.AccessToken(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	result, err := a.withings.FetchMeasurements(ctx, token, cursor)
+	if err != nil {
+		return 0, err
+	}
+	normalized := withings.NormalizeMeasurements(result.Groups)
+	measurements := make([]store.Measurement, 0, len(normalized))
+	for _, measurement := range normalized {
+		measurements = append(measurements, store.Measurement{WithingsUserID: userID, SourceGroupID: measurement.SourceGroupID, Metric: measurement.Metric, Value: measurement.Value, Unit: measurement.Unit, ObservedAt: measurement.ObservedAt})
+	}
+	return a.store.ImportMeasurements(ctx, userID, "weight", measurements, result.UpdateTime)
+}
+
+func (a *App) manualWeightSync(w http.ResponseWriter, r *http.Request) {
+	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
+		count, err := a.SyncWeight(r.Context(), r.PathValue("id"))
+		result := syncResult{Message: fmt.Sprintf("Imported %d new scale measurements.", count)}
+		if err != nil {
+			result = syncResult{Message: "Weight sync failed.", Failed: true}
+		}
+		if strings.EqualFold(r.Header.Get("HX-Request"), "true") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = a.templates.ExecuteTemplate(w, "sync-result", result)
+			return
+		}
+		values := url.Values{"sync": {result.Message}}
+		if result.Failed {
+			values.Set("sync_failed", "true")
+		}
+		http.Redirect(w, r, "/admin?"+values.Encode(), http.StatusSeeOther)
+	})(w, r)
+}
+
 func (a *App) unlinkWithings(w http.ResponseWriter, r *http.Request) {
 	a.localAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if err := a.store.DeleteLinkedUser(r.Context(), r.PathValue("id")); err != nil {
@@ -275,6 +327,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database unavailable", 500)
 		return
 	}
+	data.SyncMessage = r.URL.Query().Get("sync")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = a.templates.ExecuteTemplate(w, "admin", data)
 }
